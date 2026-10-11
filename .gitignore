@@ -1,0 +1,16 @@
+# ESPHome
+secrets.yaml
+.esphome/
+*.bin
+
+# Stock firmware dump (never commit)
+agent-devkit-original*.bin
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Python bytecode from external_components
+__pycache__/

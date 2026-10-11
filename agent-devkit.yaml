@@ -1,0 +1,754 @@
+# Based on the ESP32-S3-BOX-3 configuration from
+# https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
+# Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3)
+#
+# Audio: ES7210 microphone ADC, ES8311 speaker DAC, HT6872 amplifier enabled through
+# the AW9523 IO expander, media player, on-device wake word and voice assistant.
+#
+# Pinout source: vendor schematic rev V1.1, see docs/pinout.md.
+# Tested on: ESPHome 2026.9.1 + Home Assistant 2026.10 (2026-10-11): speaker, mic, wake word
+# and the full Assist pipeline (STT, conversation agent, TTS playback) confirmed
+
+substitutions:
+  name: agent-devkit
+  friendly_name: Agent Dev Kit
+
+  # I2C (shared by ES8311, ES7210, AW9523, touch, proximity sensor)
+  i2c_sda: GPIO5
+  i2c_scl: GPIO4
+  i2c_addr_es8311: "0x18"
+  i2c_addr_es7210: "0x40"
+  i2c_addr_aw9523: "0x59"
+
+  # I2S (shared by ES8311 and ES7210)
+  i2s_mclk: GPIO47
+  i2s_bclk: GPIO14
+  i2s_lrclk: GPIO13
+  i2s_dout: GPIO12   # ESP -> ES8311 (net ES_DAIN)
+  i2s_din: GPIO21    # ES7210 -> ESP (net ES_ADOUT)
+
+  # AW9523 pins: 0-7 = P0_0..P0_7, 8-15 = P1_0..P1_7
+  aw9523_pa_ctrl: "13"   # P1_5, HT6872 amplifier enable (net ES_CTRL)
+  aw9523_lcd_rst: "14"   # P1_6, LCD + touch reset
+
+  # LCD: ST7796U on an 8-bit 8080 bus
+  lcd_wr: GPIO10
+  lcd_dc: GPIO45
+  lcd_d0: GPIO9
+  lcd_d1: GPIO3
+  lcd_d2: GPIO8
+  lcd_d3: GPIO18
+  lcd_d4: GPIO17
+  lcd_d5: GPIO16
+  lcd_d6: GPIO15
+  lcd_d7: GPIO7
+  touch_int: GPIO6
+
+  # Voice assistant UI phases (see globals.voice_assistant_phase)
+  va_phase_not_connected: "0"
+  va_phase_idle: "1"
+  va_phase_listening: "2"
+  va_phase_thinking: "3"
+  va_phase_replying: "4"
+  va_phase_error: "5"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.9.0
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: dac_off
+      - delay: 2s
+      - script.execute: start_wake_word
+      - script.execute: set_idle_phase
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+external_components:
+  # Components ESPHome core lacks, kept in this repo (Apache-2.0):
+  #   aw9523   - IO expander / LED driver (amplifier enable, LCD reset, backlight)
+  #   mipi_i80 - 8080 / i80 parallel display driver (ST7796U)
+  - source:
+      type: local
+      path: components
+    components: [aw9523, mipi_i80]
+
+logger:
+  level: DEBUG
+  # ESP32-S3 defaults to the native USB-JTAG console (rear USB-C). The CH343P on the
+  # bottom USB-C is wired to UART0, so force logs there.
+  hardware_uart: UART0
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  on_client_connected:
+    - script.execute: start_wake_word
+    - script.execute: set_idle_phase
+  on_client_disconnected:
+    - script.execute: set_idle_phase
+
+ota:
+  - platform: esphome
+    encryption:
+      key: !secret api_encryption_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Mains powered voice satellite: keep latency low.
+  power_save_mode: none
+  ap:
+    ssid: ${friendly_name} Fallback
+    password: !secret ap_password
+
+captive_portal:
+
+i2c:
+  - id: bus_a
+    sda: ${i2c_sda}
+    scl: ${i2c_scl}
+    frequency: 400kHz
+    scan: true
+
+aw9523:
+  - id: io_expander
+    i2c_id: bus_a
+    address: ${i2c_addr_aw9523}
+    led_current_limit: 37mA
+
+switch:
+  - platform: template
+    id: mute
+    name: Mute
+    icon: mdi:microphone-off
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - micro_wake_word.stop:
+      - lvgl.widget.update:
+          id: mute_button
+          state:
+            checked: true
+      - script.execute: set_idle_phase
+    on_turn_off:
+      - lvgl.widget.update:
+          id: mute_button
+          state:
+            checked: false
+      - script.execute: start_wake_word
+      - script.execute: set_idle_phase
+  # HT6872 class-D amplifier enable. Switched by the dac_on / dac_off scripts only while the
+  # ES8311 DAC is powered down and static, see the comments there.
+  - platform: gpio
+    id: amplifier_enable
+    name: Speaker amplifier
+    icon: mdi:amplifier
+    restore_mode: ALWAYS_OFF
+    entity_category: diagnostic
+    pin:
+      aw9523: io_expander
+      number: ${aw9523_pa_ctrl}
+      mode:
+        output: true
+
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin: ${i2s_lrclk}
+    i2s_bclk_pin: ${i2s_bclk}
+    i2s_mclk_pin: ${i2s_mclk}
+
+audio_adc:
+  - platform: es7210
+    id: es7210_adc
+    i2c_id: bus_a
+    address: ${i2c_addr_es7210}
+    bits_per_sample: 16bit
+    sample_rate: 16000
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: bus_a
+    address: ${i2c_addr_es8311}
+    bits_per_sample: 16bit
+    sample_rate: 48000
+
+microphone:
+  - platform: i2s_audio
+    id: box_mic
+    i2s_audio_id: i2s_audio_bus
+    i2s_din_pin: ${i2s_din}
+    adc_type: external
+    sample_rate: 16000
+    bits_per_sample: 16bit
+
+speaker:
+  - platform: i2s_audio
+    id: box_speaker
+    i2s_audio_id: i2s_audio_bus
+    i2s_dout_pin: ${i2s_dout}
+    dac_type: external
+    audio_dac: es8311_dac
+    sample_rate: 48000
+    bits_per_sample: 16bit
+    channel: left
+    buffer_duration: 100ms
+
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: None
+    volume_min: 0.4
+    volume_max: 0.8
+    announcement_pipeline:
+      speaker: box_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 1
+    files:
+      - id: test_sound
+        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+    # The microphone and speaker share one I2S bus, so the wake word engine must
+    # release the microphone before playback starts, and resume afterwards.
+    on_announcement:
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - micro_wake_word.stop:
+      - script.execute: dac_on
+    on_play:
+      - if:
+          condition:
+            - microphone.is_capturing:
+          then:
+            - micro_wake_word.stop:
+      - script.execute: dac_on
+    on_idle:
+      - script.execute: dac_off
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - script.execute: start_wake_word
+
+button:
+  - platform: restart
+    name: Restart
+    entity_category: diagnostic
+  - platform: factory_reset
+    name: Factory reset
+    entity_category: diagnostic
+  - platform: template
+    name: Restart wake word
+    icon: mdi:ear-hearing
+    entity_category: diagnostic
+    on_press:
+      - script.execute: start_wake_word
+  - platform: template
+    name: Play test sound
+    icon: mdi:music-note
+    on_press:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: test_sound
+          announcement: true
+
+micro_wake_word:
+  id: mww
+  microphone: box_mic
+  models:
+    - okay_nabu
+    - hey_jarvis
+  on_wake_word_detected:
+    - script.execute: wake_screen
+    - text_sensor.template.publish:
+        id: last_wake_word
+        state: !lambda return wake_word;
+    - if:
+          condition:
+            api.connected:
+          then:
+            - voice_assistant.start:
+                wake_word: !lambda return wake_word;
+          else:
+            # No Home Assistant yet: acknowledge with the chime and keep listening.
+            - media_player.speaker.play_on_device_media_file:
+                media_file: test_sound
+                announcement: true
+            - delay: 1s
+            - script.execute: start_wake_word
+
+voice_assistant:
+  id: va
+  microphone: box_mic
+  media_player: speaker_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_listening:
+    - text_sensor.template.publish:
+        id: text_request
+        state: ""
+    - text_sensor.template.publish:
+        id: text_response
+        state: ""
+    - lambda: id(voice_assistant_phase) = ${va_phase_listening};
+    - script.execute: draw_display
+  on_stt_vad_end:
+    - lambda: id(voice_assistant_phase) = ${va_phase_thinking};
+    - script.execute: draw_display
+  on_stt_end:
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: draw_display
+  on_tts_start:
+    - text_sensor.template.publish:
+        id: text_response
+        state: !lambda return x;
+    - lambda: id(voice_assistant_phase) = ${va_phase_replying};
+    - script.execute: draw_display
+  on_end:
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                media_player.is_announcing:
+            - not:
+                speaker.is_playing:
+    - script.execute: start_wake_word
+    - script.execute: set_idle_phase
+  on_error:
+    - lambda: |-
+        id(voice_assistant_phase) = ${va_phase_error};
+        id(error_shown_at) = millis();
+    - script.execute: draw_display
+    - delay: 2s
+    - script.execute: start_wake_word
+    - script.execute: set_idle_phase
+  on_client_connected:
+    - script.execute: start_wake_word
+  on_client_disconnected:
+    - voice_assistant.stop:
+
+text_sensor:
+  - platform: template
+    id: last_wake_word
+    name: Last wake word
+    icon: mdi:ear-hearing
+    entity_category: diagnostic
+  - platform: template
+    id: text_request
+    name: Request
+    icon: mdi:account-voice
+  - platform: template
+    id: text_response
+    name: Response
+    icon: mdi:reply
+
+script:
+  # The microphone and the speaker share the I2S bus; every switch between them stops and
+  # restarts the clocks the ES8311 sees. With the DAC powered, its modulator freezes and the
+  # analog output slews to a rail, which pops even when digitally muted. So the DAC stage is
+  # powered down (REG12 PDN_DAC) whenever nothing plays and brought up only once the speaker
+  # driver has the clocks running.
+  # Order matters: the amplifier only ever switches while the DAC is static and powered down,
+  # and the DAC only ever changes state while the I2S clocks are running.
+  - id: dac_off
+    mode: restart
+    then:
+      - audio_dac.mute_on: es8311_dac
+      - delay: 150ms
+      - switch.turn_off: amplifier_enable
+      - delay: 60ms
+      - lambda: id(es8311_dac).write_byte(0x12, 0x02);  // PDN_DAC
+  - id: dac_on
+    mode: restart
+    then:
+      - wait_until:
+          condition:
+            speaker.is_playing:
+          timeout: 1s
+      - lambda: id(es8311_dac).write_byte(0x12, 0x00);  // DAC on
+      - delay: 30ms
+      - audio_dac.mute_off: es8311_dac
+      - delay: 60ms
+      - switch.turn_on: amplifier_enable
+  - id: wake_screen
+    mode: restart
+    then:
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+  - id: draw_display
+    mode: restart
+    then:
+      - lvgl.widget.update:
+          id: phase_disc
+          bg_color: !lambda |-
+            switch (id(voice_assistant_phase)) {
+              case ${va_phase_idle}:      return lv_color_hex(0x3A3A44);
+              case ${va_phase_listening}: return lv_color_hex(0x0078FF);
+              case ${va_phase_thinking}:  return lv_color_hex(0xFFAA00);
+              case ${va_phase_replying}:  return lv_color_hex(0x00BE50);
+              case ${va_phase_error}:     return lv_color_hex(0xDC1E1E);
+              default:                    return lv_color_hex(0x5A5A5A);
+            }
+      - lvgl.label.update:
+          id: phase_label
+          text: !lambda |-
+            switch (id(voice_assistant_phase)) {
+              case ${va_phase_idle}:      return std::string(id(mute).state ? "Muted" : "Say \"Okay Nabu\"");
+              case ${va_phase_listening}: return std::string("Listening");
+              case ${va_phase_thinking}:  return std::string("Thinking");
+              case ${va_phase_replying}:  return std::string("Replying");
+              case ${va_phase_error}:     return std::string("Error");
+              default:                    return std::string("Not connected");
+            }
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == ${va_phase_thinking};
+          then:
+            - lvgl.widget.show: phase_spinner
+          else:
+            - lvgl.widget.hide: phase_spinner
+      - lvgl.label.update:
+          id: request_label
+          text: !lambda return id(text_request).state;
+      - lvgl.label.update:
+          id: response_label
+          text: !lambda return id(text_response).state;
+  - id: set_idle_phase
+    then:
+      - lambda: |-
+          id(voice_assistant_phase) = api::global_api_server->is_connected() ? ${va_phase_idle} : ${va_phase_not_connected};
+      - lvgl.widget.update:
+          id: link_dot
+          bg_color: !lambda |-
+            return api::global_api_server->is_connected() ? lv_color_hex(0x00BE50) : lv_color_hex(0xDC1E1E);
+      - script.execute: draw_display
+  - id: start_wake_word
+    # The speaker stops and the voice assistant goes idle in the same loop pass, in that order,
+    # so a plain "is the VA running?" check at the moment playback ends races and loses.
+    # Wait for the VA to settle instead of checking once.
+    mode: restart
+    then:
+      - wait_until:
+          condition:
+            not:
+              - voice_assistant.is_running:
+          timeout: 10s
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - switch.is_off: mute
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - micro_wake_word.start:
+          else:
+            - logger.log:
+                level: WARN
+                format: "start_wake_word: not restarting (voice assistant still running or muted)"
+
+# ---------------------------------------------------------------------------
+# Display: ST7796U 320x480 on an 8-bit 8080 bus, reset and backlight via AW9523
+# ---------------------------------------------------------------------------
+display:
+  - platform: mipi_i80
+    id: lcd
+    model: ST7796_AD35
+    data_pins:
+      - ${lcd_d0}
+      - ${lcd_d1}
+      - ${lcd_d2}
+      - ${lcd_d3}
+      - ${lcd_d4}
+      - ${lcd_d5}
+      - ${lcd_d6}
+      - ${lcd_d7}
+    wr_pin: ${lcd_wr}
+    dc_pin: ${lcd_dc}
+    panel_select_pins:
+      - ${lcd_d0}
+      - ${lcd_d3}
+    reset_pin:
+      aw9523: io_expander
+      number: ${aw9523_lcd_rst}
+      mode:
+        output: true
+    pclk_frequency: 20MHz  # ST7796 8-bit write timing; 40 MHz corrupts the image
+    # Vendor default orientation is MADCTL 0x48 (mirror X, BGR); rotate 90 for landscape.
+    transform:
+      mirror_x: true
+    update_interval: never
+    auto_clear_enabled: false
+
+font:
+  - file: gfonts://Roboto
+    id: font_small
+    size: 18
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+  - file: gfonts://Roboto
+    id: font_medium
+    size: 22
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+  - file: gfonts://Roboto
+    id: font_large
+    size: 32
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+
+output:
+  # The six AW9523 LED-mode outputs driving the backlight in parallel (vendor firmware: 37 mA max,
+  # duty 128/255 at boot).
+  - platform: aw9523
+    id: bl0
+    aw9523: io_expander
+    pin: 8
+  - platform: aw9523
+    id: bl1
+    aw9523: io_expander
+    pin: 9
+  - platform: aw9523
+    id: bl2
+    aw9523: io_expander
+    pin: 10
+  - platform: aw9523
+    id: bl3
+    aw9523: io_expander
+    pin: 11
+  - platform: aw9523
+    id: bl4
+    aw9523: io_expander
+    pin: 0
+  - platform: aw9523
+    id: bl5
+    aw9523: io_expander
+    pin: 1
+  - platform: template
+    id: backlight_output
+    type: float
+    write_action:
+      - output.set_level:
+          id: bl0
+          level: !lambda return state;
+      - output.set_level:
+          id: bl1
+          level: !lambda return state;
+      - output.set_level:
+          id: bl2
+          level: !lambda return state;
+      - output.set_level:
+          id: bl3
+          level: !lambda return state;
+      - output.set_level:
+          id: bl4
+          level: !lambda return state;
+      - output.set_level:
+          id: bl5
+          level: !lambda return state;
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: Backlight
+    icon: mdi:brightness-6
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 300ms
+    initial_state:
+      brightness: 100%
+
+touchscreen:
+  - platform: ft63x6
+    id: touch
+    i2c_id: bus_a
+    interrupt_pin: ${touch_int}
+    display: lcd
+    on_touch:
+      - script.execute: wake_screen
+    # From a 5-point tap test on 2026-10-11 (raw = 1.035*x + 5, raw = 0.976*y + 6).
+    calibration:
+      x_min: 5
+      x_max: 336
+      y_min: 6
+      y_max: 474
+globals:
+  - id: voice_assistant_phase
+    type: int
+    initial_value: ${va_phase_not_connected}
+  - id: error_shown_at
+    type: uint32_t
+    initial_value: "0"
+
+# ---------------------------------------------------------------------------
+# LVGL user interface (portrait 320x480)
+# ---------------------------------------------------------------------------
+lvgl:
+  displays: [lcd]
+  touchscreens: [touch]
+  # Dim the backlight after a minute without touch; any touch or voice activity restores it.
+  on_idle:
+    - timeout: 60s
+      then:
+        - light.turn_on:
+            id: backlight
+            brightness: 15%
+  buffer_size: 25%
+  color_depth: 16
+  byte_order: big_endian
+  default_font: font_medium
+  disp_bg_color: 0x000000
+  style_definitions:
+    - id: bar_style
+      bg_color: 0x101014
+      border_width: 0
+      radius: 0
+      pad_all: 10
+  pages:
+    - id: main_page
+      bg_color: 0x000000
+      pad_all: 0
+      widgets:
+        # header
+        - label:
+            id: title_label
+            text: Agent Dev Kit
+            text_font: font_small
+            text_color: 0xA0A0A0
+            align: TOP_MID
+            y: 12
+        - obj:
+            id: link_dot
+            width: 12
+            height: 12
+            radius: 6
+            border_width: 0
+            bg_color: 0xDC1E1E
+            align: TOP_RIGHT
+            x: -14
+            y: 16
+        # phase indicator
+        - spinner:
+            id: phase_spinner
+            align: TOP_MID
+            y: 50
+            width: 150
+            height: 150
+            spin_time: 1.5s
+            arc_length: 90deg
+            arc_width: 6
+            arc_color: 0x303030
+            hidden: true
+            indicator:
+              arc_color: 0xFFAA00
+              arc_width: 6
+        - obj:
+            id: phase_disc
+            width: 120
+            height: 120
+            radius: 60
+            border_width: 0
+            bg_color: 0x5A5A5A
+            align: TOP_MID
+            y: 65
+        - label:
+            id: phase_label
+            text: Not connected
+            text_font: font_large
+            text_color: 0xFFFFFF
+            align: TOP_MID
+            y: 200
+        # conversation
+        - label:
+            id: request_label
+            text: ""
+            text_font: font_small
+            text_color: 0xA8C8FF
+            long_mode: WRAP
+            width: 296
+            align: TOP_LEFT
+            x: 12
+            y: 250
+        - label:
+            id: response_label
+            text: ""
+            text_font: font_medium
+            text_color: 0xFFFFFF
+            long_mode: WRAP
+            width: 296
+            height: 110
+            align: TOP_LEFT
+            x: 12
+            y: 300
+        # bottom bar: mute + volume
+        - obj:
+            id: bottom_bar
+            styles: bar_style
+            width: 320
+            height: 64
+            align: BOTTOM_MID
+            widgets:
+              - button:
+                  id: mute_button
+                  width: 56
+                  height: 44
+                  align: LEFT_MID
+                  checkable: true
+                  bg_color: 0x2A2A30
+                  radius: 8
+                  checked:
+                    bg_color: 0xDC1E1E
+                  widgets:
+                    - label:
+                        text: "\uF131"
+                        text_font: montserrat_20
+                        align: CENTER
+                  on_click:
+                    - switch.toggle: mute
+              - slider:
+                  id: volume_slider
+                  width: 200
+                  height: 10
+                  align: RIGHT_MID
+                  x: -8
+                  min_value: 0
+                  max_value: 100
+                  value: 50
+                  bg_color: 0x2A2A30
+                  indicator:
+                    bg_color: 0x0078FF
+                  knob:
+                    bg_color: 0xFFFFFF
+                    radius: 8
+                    pad_all: 4
+                  on_release:
+                    - media_player.volume_set:
+                        id: speaker_media_player
+                        volume: !lambda return x / 100.0;

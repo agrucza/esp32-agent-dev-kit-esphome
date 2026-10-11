@@ -1,0 +1,58 @@
+# Milestone 1: minimal headless firmware for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3).
+# Purpose: get Wi-Fi/API/OTA/logging working and run an I2C bus scan to verify
+# the codec/IO-expander/touch addresses. No audio, no display.
+#
+# Tested on: ESPHome 2026.9.1 (2026-10-11): I2C scan, Wi-Fi, encrypted API and OTA all OK
+
+substitutions:
+  name: agent-devkit
+  friendly_name: Agent Dev Kit
+  # From vendor schematic rev V1.1 (see docs/pinout.md); not yet confirmed on hardware.
+  i2c_sda: GPIO5
+  i2c_scl: GPIO4
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: DEBUG
+  # ESP32-S3 defaults to the native USB-JTAG console (rear USB-C). The CH343P on the
+  # bottom USB-C is wired to UART0, so force logs there.
+  hardware_uart: UART0
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    encryption:
+      key: !secret api_encryption_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: ${friendly_name} Fallback
+    password: !secret ap_password
+
+captive_portal:
+
+i2c:
+  - id: bus_a
+    sda: ${i2c_sda}
+    scl: ${i2c_scl}
+    scan: true
+    frequency: 400kHz
