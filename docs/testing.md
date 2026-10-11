@@ -40,7 +40,7 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 | D3 | Ask something that makes the agent ask back, then answer the follow-up | Second turn works without a wake word; after the final answer the screen returns to idle |
 | D4 | Same as D3 but ignore the follow-up | Error disc briefly, then idle, wake word works again |
 | D5 | Ask a question with a long answer (3+ sentences) | Text wraps, nothing overflows the bottom bar, playback not cut off |
-| D6 | Say the wake word while an answer is still playing | Either ignored or the answer is interrupted; no crash, idle afterwards |
+| D6 | Say the wake word while an answer is still playing | The answer is interrupted and a new request starts (microphone stays on during playback); idle afterwards |
 
 ## E. Mute
 

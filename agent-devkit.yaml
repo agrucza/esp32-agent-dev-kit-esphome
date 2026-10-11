@@ -59,8 +59,11 @@ esphome:
   on_boot:
     priority: -100
     then:
-      - script.execute: dac_off
-      - delay: 2s
+      # micro_wake_word loads its models late; wait for it instead of guessing a delay.
+      - wait_until:
+          condition:
+            lambda: return id(mww).is_ready();
+          timeout: 10s
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
 
@@ -81,12 +84,14 @@ psram:
 
 external_components:
   # Components ESPHome core lacks, kept in this repo (Apache-2.0):
-  #   aw9523   - IO expander / LED driver (amplifier enable, LCD reset, backlight)
-  #   mipi_i80 - 8080 / i80 parallel display driver (ST7796U)
+  #   aw9523    - IO expander / LED driver (amplifier enable, LCD reset, backlight)
+  #   mipi_i80  - 8080 / i80 parallel display driver (ST7796U)
+  #   i2s_audio - ESPHome's own component plus a full-duplex mode (duplex: true), so the
+  #               codec clocks never stop while microphone and speaker take turns
   - source:
       type: local
       path: components
-    components: [aw9523, mipi_i80]
+    components: [aw9523, mipi_i80, i2s_audio]
 
 logger:
   level: DEBUG
@@ -154,14 +159,14 @@ switch:
             checked: false
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
-  # HT6872 class-D amplifier enable. Switched by the dac_on / dac_off scripts only while the
-  # ES8311 DAC is powered down and static, see the comments there.
+  # HT6872 class-D amplifier enable. Always on, like the vendor firmware: with the duplex I2S
+  # bus the codec clocks never stop, so there is nothing to pop.
   - platform: gpio
     id: amplifier_enable
     name: Speaker amplifier
     icon: mdi:amplifier
-    restore_mode: ALWAYS_OFF
-    entity_category: diagnostic
+    restore_mode: ALWAYS_ON
+    entity_category: config
     pin:
       aw9523: io_expander
       number: ${aw9523_pa_ctrl}
@@ -173,6 +178,8 @@ i2s_audio:
     i2s_lrclk_pin: ${i2s_lrclk}
     i2s_bclk_pin: ${i2s_bclk}
     i2s_mclk_pin: ${i2s_mclk}
+    # One TX+RX pair that runs from the first use on; see components/i2s_audio.
+    duplex: true
 
 audio_adc:
   - platform: es7210
@@ -188,7 +195,7 @@ audio_dac:
     i2c_id: bus_a
     address: ${i2c_addr_es8311}
     bits_per_sample: 16bit
-    sample_rate: 48000
+    sample_rate: 16000
 
 microphone:
   - platform: i2s_audio
@@ -206,7 +213,11 @@ speaker:
     i2s_dout_pin: ${i2s_dout}
     dac_type: external
     audio_dac: es8311_dac
-    sample_rate: 48000
+    # Duplex bus: speaker and microphone share the clocks, so both run at 16 kHz / 16 bit
+    # (the vendor firmware's setting). "secondary" pins the stream rate so the media player
+    # resamples to it instead of trying to reconfigure the bus.
+    i2s_mode: secondary
+    sample_rate: 16000
     bits_per_sample: 16bit
     channel: left
     buffer_duration: 100ms
@@ -220,29 +231,16 @@ media_player:
     announcement_pipeline:
       speaker: box_speaker
       format: FLAC
-      sample_rate: 48000
+      sample_rate: 16000
       num_channels: 1
     files:
       - id: test_sound
         file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
     # The microphone and speaker share one I2S bus, so the wake word engine must
     # release the microphone before playback starts, and resume afterwards.
-    on_announcement:
-      - if:
-          condition:
-            - microphone.is_capturing:
-          then:
-            - micro_wake_word.stop:
-      - script.execute: dac_on
-    on_play:
-      - if:
-          condition:
-            - microphone.is_capturing:
-          then:
-            - micro_wake_word.stop:
-      - script.execute: dac_on
+    # With the duplex bus the microphone keeps running during playback, so the wake word
+    # stays armed and can interrupt an answer.
     on_idle:
-      - script.execute: dac_off
       - if:
           condition:
             not:
@@ -369,33 +367,6 @@ text_sensor:
     icon: mdi:reply
 
 script:
-  # The microphone and the speaker share the I2S bus; every switch between them stops and
-  # restarts the clocks the ES8311 sees. With the DAC powered, its modulator freezes and the
-  # analog output slews to a rail, which pops even when digitally muted. So the DAC stage is
-  # powered down (REG12 PDN_DAC) whenever nothing plays and brought up only once the speaker
-  # driver has the clocks running.
-  # Order matters: the amplifier only ever switches while the DAC is static and powered down,
-  # and the DAC only ever changes state while the I2S clocks are running.
-  - id: dac_off
-    mode: restart
-    then:
-      - audio_dac.mute_on: es8311_dac
-      - delay: 150ms
-      - switch.turn_off: amplifier_enable
-      - delay: 60ms
-      - lambda: id(es8311_dac).write_byte(0x12, 0x02);  // PDN_DAC
-  - id: dac_on
-    mode: restart
-    then:
-      - wait_until:
-          condition:
-            speaker.is_playing:
-          timeout: 1s
-      - lambda: id(es8311_dac).write_byte(0x12, 0x00);  // DAC on
-      - delay: 30ms
-      - audio_dac.mute_off: es8311_dac
-      - delay: 60ms
-      - switch.turn_on: amplifier_enable
   - id: wake_screen
     mode: restart
     then:

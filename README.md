@@ -14,8 +14,8 @@ BOX-3 configuration is the reference.
 |---|---|---|
 | Wi-Fi / API / OTA / logging | ✅ works | encrypted OTA tested over Wi-Fi; logs on UART0 (bottom USB-C) |
 | I2C bus + device addresses verified | ✅ GPIO5/GPIO4, found 0x18, 0x39, 0x40, 0x59 | touch (0x38) missing, see docs/pinout.md |
-| Microphone (ES7210) | ✅ works | on-device wake word detects "Okay Nabu" |
-| Speaker (ES8311 + HT6872) | ✅ works | amp enable via AW9523 P1_5, test chime confirmed |
+| Microphone (ES7210) | ✅ works | full duplex with the speaker, stays on during playback |
+| Speaker (ES8311 + HT6872) | ✅ works | no pops: duplex I2S keeps the codec clocks running |
 | Wake word + voice assistant | ✅ works | on-device wake word, Assist pipeline with local STT/LLM/TTS via Home Assistant |
 | Display (ST7796U, 8-bit 8080 bus) | ✅ works | own `mipi_i80` component on ESP-IDF esp_lcd; LVGL status page with mute and volume |
 | Touch (FT6336U) | ✅ works | core `ft63x6`, 5-point calibration in the config |
@@ -38,8 +38,11 @@ Tested with: ESPHome 2026.9.1 and Home Assistant 2026.10 (milestones 1 to 5 on h
 
 See `docs/pinout.md` for the GPIO map (from the vendor schematic) and open questions.
 
-**Audio note:** microphone and speaker share one I2S bus. The amplifier enable (AW9523 P1_5) is
-switched on only while audio plays, otherwise every microphone start or stop pops through the speaker.
+**Audio note:** microphone and speaker share one I2S bus. Stock ESPHome runs them one at a time
+and restarts the codec clocks on every switch, which pops through the speaker on this board. The
+`components/i2s_audio` override adds `duplex: true`: one TX+RX channel pair that keeps running from
+the first use on, so the clocks never stop, the amplifier stays on, and the microphone keeps
+listening while audio plays. Both directions run at 16 kHz / 16 bit.
 
 **OTA note:** ESPHome's safe mode only marks a new image as good after it has run for one minute
 (`boot_is_good_after`). If the board is reset within that minute, for example by opening the serial

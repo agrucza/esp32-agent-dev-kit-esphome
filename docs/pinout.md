@@ -43,7 +43,7 @@ as an echo-reference channel.
 
 | Function | AW9523 pin | Status | Notes |
 |---|---|---|---|
-| PA_CTRL (HT6872 enable, net `ES_CTRL`) | P1_5 | verified | vendor firmware drives it high at boot; we enable it only during playback to avoid I2S pops |
+| PA_CTRL (HT6872 enable, net `ES_CTRL`) | P1_5 | verified | driven high at boot and left on, like the vendor firmware |
 | LCD reset (`LCD_RST`) | P1_6 | schematic | vendor firmware pulses low 10 ms at boot |
 | LCD backlight (`LCD_LEDK`) | P1_0, P1_1, P1_2, P1_3, P0_0, P0_1 | schematic | six parallel LED-mode outputs, 37 mA max, duty 128/255 in vendor firmware |
 
