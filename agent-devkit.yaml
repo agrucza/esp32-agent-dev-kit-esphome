@@ -2,16 +2,39 @@
 # https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
 # Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3)
 #
-# Audio: ES7210 microphone ADC, ES8311 speaker DAC, HT6872 amplifier enabled through
-# the AW9523 IO expander, media player, on-device wake word and voice assistant.
+# Importable package. Minimal user config:
+#
+#   substitutions:
+#     name: agent-devkit
+#     friendly_name: Agent Dev Kit
+#   packages:
+#     agent_devkit: github://agrucza/esp32-agent-dev-kit-esphome/agent-devkit.yaml@main
+#   esphome:
+#     name: ${name}
+#     name_add_mac_suffix: false
+#   api:
+#     encryption:
+#       key: !secret api_encryption_key
+#   ota:
+#     - id: !extend ota_esphome
+#       encryption:
+#         key: !secret api_encryption_key
+#   wifi:
+#     ssid: !secret wifi_ssid
+#     password: !secret wifi_password
+#
+# Audio: ES7210 microphone ADC and ES8311 speaker DAC in full duplex on one I2S bus, HT6872
+# amplifier enabled through the AW9523 IO expander, on-device wake word, voice assistant,
+# ST7796U display with LVGL status page and FT6336U touch.
 #
 # Pinout source: vendor schematic rev V1.1, see docs/pinout.md.
-# Tested on: ESPHome 2026.9.1 + Home Assistant 2026.10 (2026-10-11): speaker, mic, wake word
-# and the full Assist pipeline (STT, conversation agent, TTS playback) confirmed
+# Tested on: ESPHome 2026.9.1 + Home Assistant 2026.10 (2026-10-11).
 
 substitutions:
   name: agent-devkit
   friendly_name: Agent Dev Kit
+  # Where the external components come from. Local development overrides this with a path.
+  components_source: github://agrucza/esp32-agent-dev-kit-esphome@main
 
   # I2C (shared by ES8311, ES7210, AW9523, touch, proximity sensor)
   i2c_sda: GPIO5
@@ -55,7 +78,11 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
   min_version: 2026.9.0
+  project:
+    name: agrucza.esp32-agent-dev-kit
+    version: "1.0.0"
   on_boot:
     priority: -100
     then:
@@ -88,10 +115,14 @@ external_components:
   #   mipi_i80  - 8080 / i80 parallel display driver (ST7796U)
   #   i2s_audio - ESPHome's own component plus a full-duplex mode (duplex: true), so the
   #               codec clocks never stop while microphone and speaker take turns
-  - source:
-      type: local
-      path: components
+  # examples/agent-devkit-local.yaml points components_source at the checkout instead.
+  - source: ${components_source}
     components: [aw9523, mipi_i80, i2s_audio]
+    refresh: 1d
+
+dashboard_import:
+  package_import_url: github://agrucza/esp32-agent-dev-kit-esphome/agent-devkit.yaml@main
+  import_full_config: false
 
 logger:
   level: DEBUG
@@ -99,9 +130,8 @@ logger:
   # bottom USB-C is wired to UART0, so force logs there.
   hardware_uart: UART0
 
+# Users add their own encryption key under api: in their config.
 api:
-  encryption:
-    key: !secret api_encryption_key
   on_client_connected:
     - script.execute: start_wake_word
     - script.execute: set_idle_phase
@@ -110,17 +140,15 @@ api:
 
 ota:
   - platform: esphome
-    encryption:
-      key: !secret api_encryption_key
+    id: ota_esphome
 
+# Users add ssid/password under wifi: in their config; the fallback hotspot is open.
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
   # Mains powered voice satellite: keep latency low.
   power_save_mode: none
   ap:
-    ssid: ${friendly_name} Fallback
-    password: !secret ap_password
+
+improv_serial:
 
 captive_portal:
 

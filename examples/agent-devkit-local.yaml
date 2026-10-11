@@ -1,0 +1,35 @@
+# Developer config: builds the package from this checkout instead of GitHub.
+# Copy secrets.yaml.example to secrets.yaml first (a symlink in examples/ pointing at
+# ../secrets.yaml works too). Build and flash with:
+#   docker run --rm -v "$PWD":/config --device=/dev/ttyACM0 ghcr.io/esphome/esphome \
+#     run examples/agent-devkit-local.yaml --device /dev/ttyACM0
+
+substitutions:
+  name: agent-devkit
+  friendly_name: Agent Dev Kit
+  # Use the components from the checkout, not from GitHub.
+  components_source: ../components
+
+packages:
+  agent_devkit: !include ../agent-devkit.yaml
+
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+
+dashboard_import: !remove
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - id: !extend ota_esphome
+    encryption:
+      key: !secret api_encryption_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    password: !secret ap_password

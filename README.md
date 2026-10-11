@@ -22,19 +22,59 @@ BOX-3 configuration is the reference.
 
 Tested with: ESPHome 2026.9.1 and Home Assistant 2026.10 (milestones 1 to 5 on hardware, 2026-10-11).
 
-## Getting started
+## Use it
 
-1. Copy `secrets.yaml.example` to `secrets.yaml` and fill in your values.
-2. Back up the stock firmware once (bottom USB-C, CH343P, shows up as `/dev/ttyACM0`).
-   See `docs/stock-firmware.md` for the full procedure and restore command:
-   ```bash
-   esptool --port /dev/ttyACM0 --baud 921600 read_flash 0 0x1000000 agent-devkit-original.bin
-   ```
-3. Compile and flash. Start with the minimal I2C scan config, then use `agent-devkit.yaml`:
+Add this to a new ESPHome config (the ESPHome dashboard can also import it directly from
+this repository once the device runs the firmware):
+
+```yaml
+substitutions:
+  name: agent-devkit
+  friendly_name: Agent Dev Kit
+
+packages:
+  agent_devkit: github://agrucza/esp32-agent-dev-kit-esphome/agent-devkit.yaml@main
+
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - id: !extend ota_esphome
+    encryption:
+      key: !secret api_encryption_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+```
+
+The first flash goes over the bottom USB-C (shows up as `/dev/ttyACM0`), afterwards OTA works.
+Use a tag instead of `@main` to pin a release. Once the device is in Home Assistant, pick your
+Assist pipeline on the device page and say "Okay Nabu" or "Hey Jarvis".
+
+What the package gives you: the voice satellite, an LVGL status page with mute button and volume
+slider, a "Backlight" light that dims after a minute, "Mute" and "Speaker amplifier" switches,
+"Restart", "Factory reset" and "Play test sound" buttons, and "Request", "Response" and
+"Last wake word" sensors.
+
+## Develop
+
+1. Copy `secrets.yaml.example` to `secrets.yaml` and fill it in.
+2. Back up the stock firmware once, see `docs/stock-firmware.md`.
+3. Build from the checkout with `examples/agent-devkit-local.yaml`, which includes the package
+   from the local file and the components from `components/`:
    ```bash
    docker run --rm -v "$PWD":/config --device=/dev/ttyACM0 ghcr.io/esphome/esphome \
-     run examples/minimal-i2c-scan.yaml --device /dev/ttyACM0
+     run examples/agent-devkit-local.yaml --device /dev/ttyACM0
    ```
+4. Run the manual test plan in `docs/testing.md` before tagging a release.
+
+`examples/minimal-i2c-scan.yaml` is the bring-up config from milestone 1 (Wi-Fi, API, I2C scan).
 
 See `docs/pinout.md` for the GPIO map (from the vendor schematic) and open questions.
 
