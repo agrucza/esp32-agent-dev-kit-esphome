@@ -19,14 +19,14 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 |---|---|---|
 | B1 | Press "Play test sound" in HA | Chime plays, clean start, no pop before or after it |
 | B2 | Press it again immediately after it finished | Same, no pop, no "Parent bus is busy" in the log |
-| B3 | Move the volume slider on the screen to ~25 %, then B1 | Noticeably quieter chime, slider stays where released |
-| B4 | Slider to 100 %, then B1 | Loud, no distortion |
+| B3 | Drag the volume bar on the screen to ~25 % and release | Confirmation tick at the new level, 4 segments lit; then B1 is noticeably quieter |
+| B4 | Bar to 100 % | Tick is loud, top segments magenta, B1 loud without distortion |
 
 ## C. Microphone and wake word
 
 | # | Step | Expected |
 |---|---|---|
-| C1 | Say "Okay Nabu" from ~1 m, normal voice | Disc turns blue within ~0.5 s, "Listening", backlight full if it was dimmed. "Last wake word" sensor = Okay Nabu |
+| C1 | Say "Okay Nabu" from ~1 m, normal voice | Rising two-note tone, ring turns cyan within ~0.5 s, "LISTENING", backlight full if it was dimmed. "Last wake word" sensor = Okay Nabu |
 | C2 | Say "Hey Jarvis" | Same as C1, sensor = Hey Jarvis |
 | C3 | Say "Okay Nabu" from ~3 m | Still detected (one or two tries are acceptable) |
 | C4 | Say nothing for 10 s after C1 | Error disc for ~2 s, then idle. Wake word reacts again afterwards |
@@ -35,7 +35,7 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 
 | # | Step | Expected |
 |---|---|---|
-| D1 | Wake word + "Wie spät ist es?" | Blue → orange (spinner) → green while the answer plays → idle. Question and answer appear on the screen and in the Request/Response sensors |
+| D1 | Wake word + "Wie spät ist es?" | Cyan → falling two-note tone when the text is recognised → amber (spinner) → magenta while the answer plays → standby. Question and answer appear in the terminal and in the Request/Response sensors |
 | D2 | Repeat D1 three times with ~10 s pauses | Every time the wake word is picked up again, no restart needed |
 | D3 | Ask something that makes the agent ask back, then answer the follow-up | Second turn works without a wake word; after the final answer the screen returns to idle |
 | D4 | Same as D3 but ignore the follow-up | Error disc briefly, then idle, wake word works again |

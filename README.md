@@ -17,7 +17,7 @@ BOX-3 configuration is the reference.
 | Microphone (ES7210) | ✅ works | full duplex with the speaker, stays on during playback |
 | Speaker (ES8311 + HT6872) | ✅ works | no pops: duplex I2S keeps the codec clocks running |
 | Wake word + voice assistant | ✅ works | on-device wake word, Assist pipeline with local STT/LLM/TTS via Home Assistant |
-| Display (ST7796U, 8-bit 8080 bus) | ✅ works | own `mipi_i80` component on ESP-IDF esp_lcd; LVGL status page with mute and volume |
+| Display (ST7796U, 8-bit 8080 bus) | ✅ works | own `mipi_i80` component on ESP-IDF esp_lcd; LVGL HUD with mute and volume |
 | Touch (FT6336U) | ✅ works | core `ft63x6`, 5-point calibration in the config |
 
 Tested with: ESPHome 2026.9.1 and Home Assistant 2026.10 (milestones 1 to 5 on hardware, 2026-10-11).
@@ -57,10 +57,11 @@ The first flash goes over the bottom USB-C (shows up as `/dev/ttyACM0`), afterwa
 Use a tag instead of `@main` to pin a release. Once the device is in Home Assistant, pick your
 Assist pipeline on the device page and say "Okay Nabu" or "Hey Jarvis".
 
-What the package gives you: the voice satellite, an LVGL status page with mute button and volume
-slider, a "Backlight" light that dims after a minute, "Mute" and "Speaker amplifier" switches,
-"Restart", "Factory reset" and "Play test sound" buttons, and "Request", "Response" and
-"Last wake word" sensors.
+What the package gives you: the voice satellite with a HUD-style LVGL screen (state ring, the
+conversation as a terminal, mute button, segmented volume bar), short signal tones on wake word,
+recognised command and volume change, a "Backlight" light that dims after a minute, "Mute" and
+"Speaker amplifier" switches, "Restart", "Factory reset" and "Play test sound" buttons, and
+"Request", "Response" and "Last wake word" sensors.
 
 ## Develop
 
@@ -83,6 +84,10 @@ and restarts the codec clocks on every switch, which pops through the speaker on
 `components/i2s_audio` override adds `duplex: true`: one TX+RX channel pair that keeps running from
 the first use on, so the clocks never stop, the amplifier stays on, and the microphone keeps
 listening while audio plays. Both directions run at 16 kHz / 16 bit.
+
+**Sounds:** everything in `sounds/` is 16 kHz mono FLAC because bundled files are played as they
+are (only Home Assistant's TTS is transcoded). `sounds/generate.sh` recreates the synthesized tones
+with ffmpeg; the test chime is the Home Assistant Voice PE timer sound, downsampled.
 
 **OTA note:** ESPHome's safe mode only marks a new image as good after it has run for one minute
 (`boot_is_good_after`). If the board is reset within that minute, for example by opening the serial

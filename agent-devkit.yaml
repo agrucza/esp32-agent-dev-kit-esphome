@@ -93,6 +93,9 @@ esphome:
           timeout: 10s
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
+      - script.execute:
+          id: draw_volume
+          level: 50
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -179,12 +182,20 @@ switch:
           id: mute_button
           state:
             checked: true
+      - lvgl.label.update:
+          id: mute_label
+          text: "MUTED"
+          text_color: 0x10060B
       - script.execute: set_idle_phase
     on_turn_off:
       - lvgl.widget.update:
           id: mute_button
           state:
             checked: false
+      - lvgl.label.update:
+          id: mute_label
+          text: "MUTE"
+          text_color: 0x00E5FF
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
   # HT6872 class-D amplifier enable. Always on, like the vendor firmware: with the duplex I2S
@@ -261,9 +272,16 @@ media_player:
       format: FLAC
       sample_rate: 16000
       num_channels: 1
+    # Bundled sounds must already match the announcement pipeline (16 kHz, mono): Home
+    # Assistant transcodes TTS to that format, local files are played as they are.
+    # timer_finished.flac is the Home Assistant Voice PE chime (Apache-2.0), downsampled.
     files:
       - id: test_sound
-        file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+        file: sounds/timer_finished.flac
+      - id: wake_sound
+        file: sounds/wake.flac
+      - id: command_sound
+        file: sounds/command.flac
     # The microphone and speaker share one I2S bus, so the wake word engine must
     # release the microphone before playback starts, and resume afterwards.
     # With the duplex bus the microphone keeps running during playback, so the wake word
@@ -312,6 +330,9 @@ micro_wake_word:
           condition:
             api.connected:
           then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_sound
+                announcement: true
             - voice_assistant.start:
                 wake_word: !lambda return wake_word;
           else:
@@ -343,6 +364,9 @@ voice_assistant:
     - lambda: id(voice_assistant_phase) = ${va_phase_thinking};
     - script.execute: draw_display
   on_stt_end:
+    - media_player.speaker.play_on_device_media_file:
+        media_file: command_sound
+        announcement: true
     - text_sensor.template.publish:
         id: text_request
         state: !lambda return x;
@@ -404,49 +428,58 @@ script:
   - id: draw_display
     mode: restart
     then:
-      - lvgl.widget.update:
-          id: phase_disc
-          bg_color: !lambda |-
-            switch (id(voice_assistant_phase)) {
-              case ${va_phase_idle}:      return lv_color_hex(0x3A3A44);
-              case ${va_phase_listening}: return lv_color_hex(0x0078FF);
-              case ${va_phase_thinking}:  return lv_color_hex(0xFFAA00);
-              case ${va_phase_replying}:  return lv_color_hex(0x00BE50);
-              case ${va_phase_error}:     return lv_color_hex(0xDC1E1E);
-              default:                    return lv_color_hex(0x5A5A5A);
-            }
-      - lvgl.label.update:
-          id: phase_label
-          text: !lambda |-
-            switch (id(voice_assistant_phase)) {
-              case ${va_phase_idle}:      return std::string(id(mute).state ? "Muted" : "Say \"Okay Nabu\"");
-              case ${va_phase_listening}: return std::string("Listening");
-              case ${va_phase_thinking}:  return std::string("Thinking");
-              case ${va_phase_replying}:  return std::string("Replying");
-              case ${va_phase_error}:     return std::string("Error");
-              default:                    return std::string("Not connected");
-            }
-      - if:
-          condition:
-            lambda: return id(voice_assistant_phase) == ${va_phase_thinking};
-          then:
-            - lvgl.widget.show: phase_spinner
-          else:
-            - lvgl.widget.hide: phase_spinner
-      - lvgl.label.update:
-          id: request_label
-          text: !lambda return id(text_request).state;
-      - lvgl.label.update:
-          id: response_label
-          text: !lambda return id(text_response).state;
+      - lambda: |-
+          // HUD colours per phase: accent, label, sub label
+          uint32_t accent = 0x2B3647; const char *label = "STANDBY"; const char *sub = "SAY \"OKAY NABU\"";
+          bool hollow = true; bool show_a = false, show_b = false;
+          switch (id(voice_assistant_phase)) {
+            case ${va_phase_idle}:
+              if (id(mute).state) { label = "MUTED"; sub = "MIC CLOSED"; accent = 0xFF2B74; }
+              break;
+            case ${va_phase_listening}: accent = 0x00E5FF; label = "LISTENING";  sub = "MIC OPEN";      show_a = true; break;
+            case ${va_phase_thinking}:  accent = 0xFFC400; label = "PROCESSING"; sub = "INTENT // LLM"; show_b = true; hollow = false; break;
+            case ${va_phase_replying}:  accent = 0xFF2B74; label = "REPLYING";   sub = "TTS // PIPER";  hollow = false; break;
+            case ${va_phase_error}:     accent = 0xFF3B3B; label = "FAULT";      sub = "PIPELINE ERROR"; break;
+            default:                    accent = 0xFF3B3B; label = "NO LINK";    sub = "WAITING FOR HOME ASSISTANT"; break;
+          }
+          lv_color_t c = lv_color_hex(accent);
+          lv_obj_set_style_border_color(id(ring_main), c, 0);
+          lv_obj_set_style_border_color(id(phase_disc), c, 0);
+          lv_obj_set_style_bg_color(id(phase_disc), c, 0);
+          lv_obj_set_style_bg_opa(id(phase_disc), hollow ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+          lv_obj_t *frames[] = {id(frame_tl)->obj, id(frame_tr)->obj, id(frame_bl)->obj, id(frame_br)->obj};
+          for (auto *f : frames) lv_obj_set_style_line_color(f, c, 0);
+          lv_label_set_text(id(phase_label), label);
+          lv_obj_set_style_text_color(id(phase_label), id(voice_assistant_phase) == ${va_phase_idle} && !id(mute).state ? lv_color_hex(0xD7E3F0) : c, 0);
+          lv_label_set_text(id(phase_sub), sub);
+          if (show_a) lv_obj_clear_flag(id(spin_a), LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(id(spin_a), LV_OBJ_FLAG_HIDDEN);
+          if (show_b) lv_obj_clear_flag(id(spin_b), LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(id(spin_b), LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(id(request_label), id(text_request).state.c_str());
+          lv_label_set_text(id(response_label), id(text_response).state.c_str());
+  - id: draw_volume
+    mode: restart
+    parameters:
+      level: int
+    then:
+      - lambda: |-
+          lv_obj_t *segs[] = {id(seg0), id(seg1), id(seg2), id(seg3), id(seg4), id(seg5), id(seg6), id(seg7),
+                              id(seg8), id(seg9), id(seg10), id(seg11), id(seg12), id(seg13), id(seg14), id(seg15)};
+          int lit = (level * 16 + 50) / 100;
+          for (int i = 0; i < 16; i++) {
+            uint32_t col = i >= lit ? 0x1A2433 : (i >= 11 ? 0xFF2B74 : 0x00E5FF);
+            lv_obj_set_style_bg_color(segs[i], lv_color_hex(col), 0);
+          }
+          lv_label_set_text_fmt(id(vol_value), "%d", level);
   - id: set_idle_phase
     then:
       - lambda: |-
           id(voice_assistant_phase) = api::global_api_server->is_connected() ? ${va_phase_idle} : ${va_phase_not_connected};
-      - lvgl.widget.update:
-          id: link_dot
-          bg_color: !lambda |-
-            return api::global_api_server->is_connected() ? lv_color_hex(0x00BE50) : lv_color_hex(0xDC1E1E);
+      - lambda: |-
+          bool up = api::global_api_server->is_connected();
+          lv_color_t c = lv_color_hex(up ? 0x00E5FF : 0xFF3B3B);
+          lv_obj_set_style_bg_color(id(link_dot), c, 0);
+          lv_obj_set_style_text_color(id(link_label), c, 0);
+          lv_label_set_text(id(link_label), up ? "HA LINK" : "NO LINK");
       - script.execute: draw_display
   - id: start_wake_word
     # The speaker stops and the voice assistant goes idle in the same loop pass, in that order,
@@ -507,21 +540,34 @@ display:
     auto_clear_enabled: false
 
 font:
-  - file: gfonts://Roboto
-    id: font_small
-    size: 18
+  # HUD typography: Orbitron for labels, Share Tech Mono for the terminal and values.
+  - file: gfonts://Orbitron@700
+    id: f_display_11
+    size: 11
+    bpp: 4
+  - file: gfonts://Orbitron@700
+    id: f_display_10
+    size: 10
+    bpp: 4
+  - file: gfonts://Orbitron@700
+    id: f_display_20
+    size: 20
     bpp: 4
     glyphsets: [GF_Latin_Core]
-  - file: gfonts://Roboto
-    id: font_medium
-    size: 22
+  - file: gfonts://Share+Tech+Mono
+    id: f_mono_11
+    size: 11
+    bpp: 4
+  - file: gfonts://Share+Tech+Mono
+    id: f_mono_13
+    size: 13
     bpp: 4
     glyphsets: [GF_Latin_Core]
-  - file: gfonts://Roboto
-    id: font_large
-    size: 32
-    bpp: 4
-    glyphsets: [GF_Latin_Core]
+
+image:
+  - file: images/grid.png
+    id: grid_img
+    type: RGB565
 
 output:
   # The six AW9523 LED-mode outputs driving the backlight in parallel (vendor firmware: 37 mA max,
@@ -612,6 +658,11 @@ globals:
 lvgl:
   displays: [lcd]
   touchscreens: [touch]
+  buffer_size: 25%
+  color_depth: 16
+  byte_order: big_endian
+  default_font: f_mono_13
+  disp_bg_color: 0x070B12
   # Dim the backlight after a minute without touch; any touch or voice activity restores it.
   on_idle:
     - timeout: 60s
@@ -619,135 +670,521 @@ lvgl:
         - light.turn_on:
             id: backlight
             brightness: 15%
-  buffer_size: 25%
-  color_depth: 16
-  byte_order: big_endian
-  default_font: font_medium
-  disp_bg_color: 0x000000
-  style_definitions:
-    - id: bar_style
-      bg_color: 0x101014
-      border_width: 0
-      radius: 0
-      pad_all: 10
   pages:
     - id: main_page
-      bg_color: 0x000000
+      bg_color: 0x070B12
+      bg_image_src: grid_img
+      bg_image_tiled: true
       pad_all: 0
+      scrollbar_mode: "OFF"
       widgets:
-        # header
+        # ---- top bar ----
         - label:
-            id: title_label
-            text: Agent Dev Kit
-            text_font: font_small
-            text_color: 0xA0A0A0
-            align: TOP_MID
+            text: "AGENT // DEVKIT"
+            text_font: f_display_11
+            text_color: 0x00E5FF
+            text_letter_space: 2
+            align: TOP_LEFT
+            x: 12
             y: 12
         - obj:
             id: link_dot
-            width: 12
-            height: 12
-            radius: 6
+            width: 8
+            height: 8
+            radius: 0
             border_width: 0
-            bg_color: 0xDC1E1E
+            bg_color: 0xFF3B3B
             align: TOP_RIGHT
-            x: -14
-            y: 16
-        # phase indicator
-        - spinner:
-            id: phase_spinner
+            x: -66
+            y: 13
+        - label:
+            id: link_label
+            text: "NO LINK"
+            text_font: f_mono_11
+            text_color: 0xFF3B3B
+            text_letter_space: 1
+            align: TOP_RIGHT
+            x: -12
+            y: 11
+        - obj:
+            width: 296
+            height: 1
+            x: 12
+            y: 33
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 12
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 49
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 86
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 123
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 160
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 197
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 234
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 271
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        - obj:
+            width: 1
+            height: 5
+            x: 308
+            y: 29
+            radius: 0
+            border_width: 0
+            bg_color: 0x00E5FF
+            bg_opa: 60%
+        # ---- core: brackets, rings, disc, labels ----
+        - line:
+            id: frame_tl
+            points: [[63, 64], [63, 50], [77, 50]]
+            line_width: 1
+            line_color: 0x2B3647
+        - line:
+            id: frame_tr
+            points: [[243, 50], [257, 50], [257, 64]]
+            line_width: 1
+            line_color: 0x2B3647
+        - line:
+            id: frame_bl
+            points: [[63, 230], [63, 244], [77, 244]]
+            line_width: 1
+            line_color: 0x2B3647
+        - line:
+            id: frame_br
+            points: [[243, 244], [257, 244], [257, 230]]
+            line_width: 1
+            line_color: 0x2B3647
+        - obj:
+            id: ring_thin
+            width: 166
+            height: 166
+            radius: 83
             align: TOP_MID
-            y: 50
-            width: 150
-            height: 150
-            spin_time: 1.5s
-            arc_length: 90deg
-            arc_width: 6
-            arc_color: 0x303030
+            y: 64
+            bg_opa: TRANSP
+            border_width: 1
+            border_color: 0x2B3647
+            border_opa: 50%
+        - obj:
+            id: ring_main
+            width: 146
+            height: 146
+            radius: 73
+            align: TOP_MID
+            y: 74
+            bg_opa: TRANSP
+            border_width: 3
+            border_color: 0x2B3647
+        - spinner:
+            id: spin_a
+            align: TOP_MID
+            y: 86
+            width: 122
+            height: 122
+            spin_time: 3s
+            arc_length: 60deg
+            arc_width: 4
+            arc_opa: TRANSP
             hidden: true
             indicator:
-              arc_color: 0xFFAA00
-              arc_width: 6
+              arc_color: 0x00E5FF
+              arc_width: 4
+        - spinner:
+            id: spin_b
+            align: TOP_MID
+            y: 86
+            width: 122
+            height: 122
+            spin_time: 1.2s
+            arc_length: 90deg
+            arc_width: 4
+            arc_opa: TRANSP
+            hidden: true
+            indicator:
+              arc_color: 0xFFC400
+              arc_width: 4
         - obj:
             id: phase_disc
-            width: 120
-            height: 120
-            radius: 60
-            border_width: 0
-            bg_color: 0x5A5A5A
+            width: 70
+            height: 70
+            radius: 0
             align: TOP_MID
-            y: 65
+            y: 112
+            bg_color: 0x2B3647
+            bg_opa: TRANSP
+            border_width: 3
+            border_color: 0x2B3647
         - label:
             id: phase_label
-            text: Not connected
-            text_font: font_large
-            text_color: 0xFFFFFF
+            text: "NO LINK"
+            text_font: f_display_20
+            text_color: 0xD7E3F0
+            text_letter_space: 3
             align: TOP_MID
-            y: 200
-        # conversation
+            y: 242
         - label:
-            id: request_label
-            text: ""
-            text_font: font_small
-            text_color: 0xA8C8FF
-            long_mode: WRAP
-            width: 296
-            align: TOP_LEFT
+            id: phase_sub
+            text: "WAITING FOR HOME ASSISTANT"
+            text_font: f_mono_11
+            text_color: 0x4B5A6E
+            text_letter_space: 1
+            align: TOP_MID
+            y: 272
+        # ---- terminal ----
+        - obj:
+            id: terminal
             x: 12
-            y: 250
-        - label:
-            id: response_label
-            text: ""
-            text_font: font_medium
-            text_color: 0xFFFFFF
-            long_mode: WRAP
+            y: 288
             width: 296
-            height: 110
-            align: TOP_LEFT
-            x: 12
-            y: 300
-        # bottom bar: mute + volume
+            height: 126
+            radius: 0
+            bg_color: 0x0A111B
+            border_width: 0
+            pad_all: 8
+            pad_left: 12
+            scrollbar_mode: "OFF"
+            widgets:
+              - obj:
+                  width: 2
+                  height: 126
+                  x: -12
+                  y: -8
+                  radius: 0
+                  border_width: 0
+                  bg_color: 0x00E5FF
+              - label:
+                  text: "> YOU"
+                  text_font: f_mono_11
+                  text_color: 0x4B5A6E
+                  align: TOP_LEFT
+                  y: 0
+              # Fixed boxes with an ellipsis: two lines for the question, three for the answer,
+              # so long texts never run into each other.
+              - label:
+                  id: request_label
+                  text: ""
+                  text_font: f_mono_13
+                  text_color: 0x00E5FF
+                  long_mode: DOT
+                  width: 274
+                  height: 34
+                  align: TOP_LEFT
+                  y: 13
+              - label:
+                  id: sys_tag
+                  text: "> SYS"
+                  text_font: f_mono_11
+                  text_color: 0x4B5A6E
+                  align: TOP_LEFT
+                  y: 50
+              - label:
+                  id: response_label
+                  text: ""
+                  text_font: f_mono_13
+                  text_color: 0xD7E3F0
+                  long_mode: DOT
+                  width: 274
+                  height: 52
+                  align: TOP_LEFT
+                  y: 63
+        # ---- bottom bar: mute + segmented volume ----
         - obj:
             id: bottom_bar
-            styles: bar_style
             width: 320
-            height: 64
+            height: 60
             align: BOTTOM_MID
+            radius: 0
+            bg_color: 0x060A10
+            border_width: 1
+            border_side: TOP
+            border_color: 0x141C28
+            pad_all: 0
+            scrollbar_mode: "OFF"
             widgets:
               - button:
                   id: mute_button
-                  width: 56
-                  height: 44
+                  width: 64
+                  height: 36
+                  x: 12
                   align: LEFT_MID
                   checkable: true
-                  bg_color: 0x2A2A30
-                  radius: 8
+                  radius: 0
+                  bg_color: 0x060A10
+                  border_width: 1
+                  border_color: 0x00E5FF
+                  shadow_width: 0
                   checked:
-                    bg_color: 0xDC1E1E
+                    bg_color: 0xFF2B74
+                    border_color: 0xFF2B74
                   widgets:
                     - label:
-                        text: "\uF131"
-                        text_font: montserrat_20
+                        id: mute_label
+                        text: "MUTE"
+                        text_font: f_display_10
+                        text_color: 0x00E5FF
+                        text_letter_space: 2
                         align: CENTER
                   on_click:
                     - switch.toggle: mute
+              - label:
+                  text: "VOL"
+                  text_font: f_mono_11
+                  text_color: 0x4B5A6E
+                  text_letter_space: 1
+                  x: 90
+                  y: 12
+              - label:
+                  id: vol_value
+                  text: "50"
+                  text_font: f_mono_11
+                  text_color: 0x00E5FF
+                  align: TOP_RIGHT
+                  x: -12
+                  y: 12
+              - obj:
+                  id: vol_segments
+                  x: 90
+                  y: 30
+                  width: 218
+                  height: 12
+                  radius: 0
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollbar_mode: "OFF"
+                  widgets:
+                    - obj:
+                        id: seg0
+                        width: 14
+                        height: 12
+                        x: 0
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg1
+                        width: 14
+                        height: 12
+                        x: 17
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg2
+                        width: 14
+                        height: 12
+                        x: 34
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg3
+                        width: 14
+                        height: 12
+                        x: 51
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg4
+                        width: 14
+                        height: 12
+                        x: 68
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg5
+                        width: 14
+                        height: 12
+                        x: 85
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg6
+                        width: 14
+                        height: 12
+                        x: 102
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg7
+                        width: 14
+                        height: 12
+                        x: 119
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg8
+                        width: 14
+                        height: 12
+                        x: 136
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg9
+                        width: 14
+                        height: 12
+                        x: 153
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg10
+                        width: 14
+                        height: 12
+                        x: 170
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg11
+                        width: 14
+                        height: 12
+                        x: 187
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg12
+                        width: 14
+                        height: 12
+                        x: 204
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg13
+                        width: 14
+                        height: 12
+                        x: 221
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg14
+                        width: 14
+                        height: 12
+                        x: 238
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+                    - obj:
+                        id: seg15
+                        width: 14
+                        height: 12
+                        x: 255
+                        y: 0
+                        radius: 0
+                        border_width: 0
+                        bg_color: 0x1A2433
+              # transparent slider on top of the segments for touch
               - slider:
                   id: volume_slider
-                  width: 200
-                  height: 10
-                  align: RIGHT_MID
-                  x: -8
+                  x: 86
+                  y: 22
+                  width: 226
+                  height: 28
                   min_value: 0
                   max_value: 100
                   value: 50
-                  bg_color: 0x2A2A30
+                  bg_opa: TRANSP
                   indicator:
-                    bg_color: 0x0078FF
+                    bg_opa: TRANSP
                   knob:
-                    bg_color: 0xFFFFFF
-                    radius: 8
-                    pad_all: 4
+                    bg_opa: TRANSP
+                    border_width: 0
+                  on_value:
+                    - script.execute:
+                        id: draw_volume
+                        level: !lambda return (int) x;
                   on_release:
                     - media_player.volume_set:
                         id: speaker_media_player
                         volume: !lambda return x / 100.0;
+                    # confirmation tick at the new volume
+                    - media_player.speaker.play_on_device_media_file:
+                        media_file: command_sound
+                        announcement: true
