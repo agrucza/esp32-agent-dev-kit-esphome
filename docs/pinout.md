@@ -100,9 +100,18 @@ Column "scan" is filled from the `i2c: scan: true` log output.
 | ES7210 (mic ADC) | 0x40 | 0x40 | AD0/AD1 low |
 | FT6336U (touch) | 0x38 | 0x38 | only after the LCD reset on AW9523 P1_6 is released; the ft63x6 driver reports chip id 100 |
 | AW9523 (IO expander) | 0x59 | 0x59 | |
-| Proximity sensor (MK-TP2016IRC / MK-PB2016PS) | ? | 0x39 | datasheets in vendor repo under `doc/Schematic/Sensors/` |
+| Proximity sensor MK-PB2016PS-A01E | 0x39 | 0x39 | 16-bit IR proximity, VCSEL MK-TP2016IRC driven from its LDR pin on the mic flex; datasheets in the vendor repo under `doc/Schematic/Sensors/` |
 
 Scan done 2026-10-11 with ESPHome 2026.9.1 and `examples/minimal-i2c-scan.yaml`.
+
+## Proximity sensor
+
+`components/mkpb2016ps/` talks to the MK-PB2016PS-A01E (command byte: bits 7:5 transaction type,
+000 single register, 001 auto-increment; ID register 0x12 reads 0x03; the engine runs after power-up
+with ENABLE 0x0D). On the development unit the readout works (status bit cycles, ~130 counts with
+default drive, ~180 with 125 mA / 32 pulses / 4x gain) but a hand at a few centimetres in front of
+the bezel never changes the value, so no reflected light reaches the sensor. Probably the bezel
+has no window for it. Presence detection is therefore off by default (threshold 65535).
 
 ## Open questions
 

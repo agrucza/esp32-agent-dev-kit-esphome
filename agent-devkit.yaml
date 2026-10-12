@@ -42,6 +42,7 @@ substitutions:
   i2c_addr_es8311: "0x18"
   i2c_addr_es7210: "0x40"
   i2c_addr_aw9523: "0x59"
+  i2c_addr_proximity: "0x39"
 
   # I2S (shared by ES8311 and ES7210)
   i2s_mclk: GPIO47
@@ -120,9 +121,10 @@ external_components:
   #   mipi_i80  - 8080 / i80 parallel display driver (ST7796U)
   #   i2s_audio - ESPHome's own component plus a full-duplex mode (duplex: true), so the
   #               codec clocks never stop while microphone and speaker take turns
+  #   mkpb2016ps - the board's IR proximity sensor (presence wakes the screen)
   # examples/agent-devkit-local.yaml points components_source at the checkout instead.
   - source: ${components_source}
-    components: [aw9523, mipi_i80, i2s_audio]
+    components: [aw9523, mipi_i80, i2s_audio, mkpb2016ps]
     refresh: 1d
 
 dashboard_import:
@@ -237,6 +239,7 @@ switch:
           announcement: true
       - script.execute: set_idle_phase
       - script.execute: draw_timer
+      - script.execute: dim_after_conversation
   # HT6872 class-D amplifier enable. Always on, like the vendor firmware: with the duplex I2S
   # bus the codec clocks never stop, so there is nothing to pop.
   - platform: gpio
@@ -359,6 +362,9 @@ button:
 micro_wake_word:
   id: mww
   microphone: box_mic
+  # Stock models. Add your own in your config (see README, "Custom wake words"); package
+  # lists merge, so they are added to these. Home Assistant's wake word selector on the
+  # device page decides which of them are active.
   models:
     - okay_nabu
     - hey_jarvis
@@ -432,6 +438,7 @@ voice_assistant:
                 speaker.is_playing:
     - script.execute: start_wake_word
     - script.execute: set_idle_phase
+    - script.execute: dim_after_conversation
   on_error:
     - lambda: |-
         id(voice_assistant_phase) = ${va_phase_error};
@@ -443,6 +450,7 @@ voice_assistant:
     - delay: 2s
     - script.execute: start_wake_word
     - script.execute: set_idle_phase
+    - script.execute: dim_after_conversation
   on_client_connected:
     - script.execute: start_wake_word
   on_client_disconnected:
@@ -461,6 +469,49 @@ voice_assistant:
     - switch.turn_on: timer_ringing
     - lambda: id(voice_assistant_phase) = ${va_phase_timer_done};
     - script.execute: draw_display
+
+sensor:
+  # IR proximity sensor on the microphone flex. Raw counts; "Presence threshold" decides what
+  # counts as someone standing in front of the device. On the unit this was developed on the
+  # sensor reads fine but never sees a reflection (no window in the bezel?), so the threshold
+  # defaults to the maximum and presence detection is effectively off until you lower it.
+  - platform: mkpb2016ps
+    id: proximity
+    name: Proximity
+    i2c_id: bus_a
+    address: ${i2c_addr_proximity}
+    update_interval: 250ms
+    led_drive: 125mA
+    pulse_count: 32
+    gain: 4
+    entity_category: diagnostic
+    filters:
+      - delta: 10
+
+number:
+  - platform: template
+    id: presence_threshold
+    name: Presence threshold
+    icon: mdi:motion-sensor
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    min_value: 0
+    max_value: 65535
+    step: 10
+    initial_value: 65535
+    unit_of_measurement: counts
+
+binary_sensor:
+  - platform: template
+    id: presence
+    name: Presence
+    device_class: occupancy
+    lambda: return id(proximity).state > id(presence_threshold).state;
+    filters:
+      - delayed_off: 2s
+    on_press:
+      - script.execute: wake_screen
 
 select:
   - platform: template
@@ -496,9 +547,25 @@ script:
   - id: wake_screen
     mode: restart
     then:
+      - script.stop: dim_after_conversation
       - light.turn_on:
           id: backlight
           brightness: 100%
+  # Dim 30 s after a conversation or a dismissed timer; touch and wake word cancel it.
+  - id: dim_after_conversation
+    mode: restart
+    then:
+      - delay: 30s
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - switch.is_off: timer_ringing
+          then:
+            - light.turn_on:
+                id: backlight
+                brightness: 15%
   - id: draw_display
     mode: restart
     then:
@@ -507,7 +574,19 @@ script:
           const bool de = id(ui_language).current_option() == "Deutsch";
           uint32_t accent = 0x2B3647;
           const char *label = de ? "BEREIT" : "STANDBY";
-          const char *sub = de ? "SAG \"OKAY NABU\"" : "SAY \"OKAY NABU\"";
+          // Idle hint names the first configured wake word ("hey_sarah" -> HEY SARAH).
+          static char hint[48];
+          {
+            // First model that is enabled (Home Assistant's wake word selector switches them).
+            std::string word;
+            for (auto *m : id(mww).get_wake_words()) {
+              if (m->is_enabled()) { word = m->get_wake_word(); break; }
+            }
+            if (word.empty()) word = "OKAY NABU";
+            for (auto &c : word) c = (c == '_') ? ' ' : (char) toupper((unsigned char) c);
+            snprintf(hint, sizeof hint, "%s \"%s\"", de ? "SAG" : "SAY", word.c_str());
+          }
+          const char *sub = hint;
           bool hollow = true; bool show_a = false, show_b = false;
           switch (id(voice_assistant_phase)) {
             case ${va_phase_idle}:
@@ -802,7 +881,21 @@ interval:
                 args: [id(voice_assistant_phase)]
             - script.execute: set_idle_phase
 
+  # Redraw the idle hint when Home Assistant enables or disables wake words.
+  - interval: 2s
+    then:
+      - lambda: |-
+          uint32_t sig = 0;
+          for (auto *m : id(mww).get_wake_words()) sig = (sig << 1) | (m->is_enabled() ? 1 : 0);
+          if (sig != id(wake_word_signature)) {
+            id(wake_word_signature) = sig;
+            id(draw_display).execute();
+          }
+
 globals:
+  - id: wake_word_signature
+    type: uint32_t
+    initial_value: "0xFFFFFFFF"
   - id: voice_assistant_phase
     type: int
     initial_value: ${va_phase_not_connected}

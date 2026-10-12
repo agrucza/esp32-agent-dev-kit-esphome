@@ -12,6 +12,9 @@ substitutions:
 
 packages:
   agent_devkit: !include ../agent-devkit.yaml
+  # Personal additions that stay out of git (custom wake words etc.).
+  # Copy local.yaml.example to local.yaml in the repo root; it is git-ignored.
+  local: !include ../local.yaml
 
 esphome:
   name: ${name}

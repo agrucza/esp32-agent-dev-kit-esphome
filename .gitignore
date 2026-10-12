@@ -14,3 +14,6 @@ agent-devkit-original*.bin
 
 # Python bytecode from external_components
 __pycache__/
+
+# Personal developer additions (custom wake words etc.)
+local.yaml

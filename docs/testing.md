@@ -55,7 +55,7 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 
 | # | Step | Expected |
 |---|---|---|
-| F1 | Leave the device alone for 60 s | Backlight dims to ~15 % |
+| F1 | Leave the device alone for 60 s after a touch, or 30 s after an answer | Backlight dims to ~15 % |
 | F2 | Tap anywhere | Backlight back to full within ~0.3 s |
 | F3 | Dim it again, then say the wake word | Backlight back to full, pipeline runs |
 | F4 | Tap the slider knob and drag it slowly across | Knob follows the finger over the whole width, no jumps |

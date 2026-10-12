@@ -19,6 +19,7 @@ BOX-3 configuration is the reference.
 | Wake word + voice assistant | ✅ works | on-device wake word, Assist pipeline with local STT/LLM/TTS via Home Assistant |
 | Display (ST7796U, 8-bit 8080 bus) | ✅ works | own `mipi_i80` component on ESP-IDF esp_lcd; LVGL HUD with mute and volume |
 | Touch (FT6336U) | ✅ works | core `ft63x6`, 5-point calibration in the config |
+| Proximity sensor (MK-PB2016PS) | ⚠️ reads, no reflection seen | own `mkpb2016ps` component; presence wake disabled by default, see docs/pinout.md |
 
 Tested with: ESPHome 2026.9.1 and Home Assistant 2026.10 (milestones 1 to 5 on hardware, 2026-10-11).
 
@@ -63,9 +64,35 @@ recognised command and volume change, voice timers with a countdown in the ring 
 "Speaker amplifier" switches, "Restart", "Factory reset" and "Play test sound" buttons, a "Timer ringing" switch, and "Request",
 "Response" and "Last wake word" sensors.
 
+## Custom wake words
+
+The package ships with "Okay Nabu" and "Hey Jarvis". To add your own, point `micro_wake_word`
+at a [micro-wake-word](https://github.com/kahrendt/microWakeWord) v2 manifest; the `.tflite`
+must sit next to the `.json`. In your own config this is simply:
+
+```yaml
+micro_wake_word:
+  models:
+    - model: github://TaterTotterson/microWakeWords/microWakeWordsV3/hey_computer.json@main
+```
+
+Package lists merge, so the model is added to the stock ones. Raw URLs work as well, and local
+paths are relative to the YAML that lists them.
+
+Two things to know:
+
+- **Which words listen is decided in Home Assistant**, not in the YAML. Open the device page,
+  find the voice assistant's "Wake word" setting and tick the words you want. A model that is
+  compiled in but not selected there stays silent.
+- The standby screen names the first enabled word, so it follows that selection.
+
+For the developer build in this repo, custom words go into `local.yaml` in the repo root, which is
+git-ignored; `local.yaml.example` shows the format.
+
 ## Develop
 
-1. Copy `secrets.yaml.example` to `secrets.yaml` and fill it in.
+1. Copy `secrets.yaml.example` to `secrets.yaml` and fill it in, and `local.yaml.example` to
+   `local.yaml` (personal additions such as wake words, git-ignored).
 2. Back up the stock firmware once, see `docs/stock-firmware.md`.
 3. Build from the checkout with `examples/agent-devkit-local.yaml`, which includes the package
    from the local file and the components from `components/`:

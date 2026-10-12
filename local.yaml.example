@@ -1,0 +1,17 @@
+# Personal additions for the developer build. Copy to local.yaml in the repo root (git-ignored).
+# Everything here is merged on top of agent-devkit.yaml.
+
+# Custom wake words: each entry points at a micro-wake-word v2 manifest (.json) with the
+# .tflite next to it. GitHub shorthand or a raw URL both work, local paths are relative to
+# this file. After flashing, enable the words you want on the device page in Home Assistant
+# (Voice assistant, Wake word); the standby hint on the screen names the first enabled one.
+# The manifests of these two ship with very low thresholds (0.31 and 0.17); a radio in the
+# room triggered "Hey Computer". The stock words use 0.97, so override the cutoff here.
+micro_wake_word:
+  models:
+    - model: github://TaterTotterson/microWakeWords/microWakeWordsV3/hey_sarah.json@main
+      probability_cutoff: 0.9
+      sliding_window_size: 5
+    - model: github://TaterTotterson/microWakeWords/microWakeWordsV3/hey_computer.json@main
+      probability_cutoff: 0.9
+      sliding_window_size: 5
