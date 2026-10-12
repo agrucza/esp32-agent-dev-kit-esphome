@@ -83,4 +83,12 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 | H6 | Repeat H1 and H3, do nothing | Chime stops by itself after two minutes |
 | H7 | H1, then "Okay Nabu, Timer stoppen" | Arc and digits disappear, ring and disc are back |
 
+## I. Language and failure feedback
+
+| # | Step | Expected |
+|---|---|---|
+| I1 | In HA set "UI language" to Deutsch | Screen switches at once: BEREIT, "> DU", STUMM on the button; after a reboot it is still German |
+| I2 | Set it back to English | STANDBY, "> YOU", MUTE |
+| I3 | Wake word, then stay silent | After a few seconds: red FAULT (FEHLER), a low double buzz, then back to standby |
+
 Record failures with the test number, what you heard or saw, and the time, so the log can be matched.
