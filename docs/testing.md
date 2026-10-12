@@ -71,4 +71,16 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 | G4 | End of an answer, when the wake word restarts | Silent |
 | G5 | Volume change via slider while idle | Silent |
 
+## H. Timers (needs "Prefer handling commands locally" in the Assist pipeline)
+
+| # | Step | Expected |
+|---|---|---|
+| H1 | "Okay Nabu, Timer eine Minute" | Assistant confirms; the ring becomes an amber arc that empties clockwise, "00:59" counts down in the centre, the disc is hidden |
+| H2 | "Okay Nabu, wie lange läuft der Timer noch?" | Spoken remaining time matches the display |
+| H3 | Let it run out | Backlight full, arc and "00:00" magenta, "TIMER DONE", the chime repeats every ~2 s, "Timer ringing" switch on in HA |
+| H4 | Tap the screen | Chime stops at once, ring and disc are back, standby screen, switch off |
+| H5 | Repeat H1 and H3, then say the wake word | Chime stops and the assistant listens |
+| H6 | Repeat H1 and H3, do nothing | Chime stops by itself after two minutes |
+| H7 | H1, then "Okay Nabu, Timer stoppen" | Arc and digits disappear, ring and disc are back |
+
 Record failures with the test number, what you heard or saw, and the time, so the log can be matched.

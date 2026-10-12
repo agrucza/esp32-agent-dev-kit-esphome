@@ -74,6 +74,7 @@ substitutions:
   va_phase_thinking: "3"
   va_phase_replying: "4"
   va_phase_error: "5"
+  va_phase_timer_done: "6"
 
 esphome:
   name: ${name}
@@ -198,6 +199,41 @@ switch:
           text_color: 0x00E5FF
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
+  # Rings the timer chime in a loop until dismissed by touch, wake word, Home Assistant, or
+  # after two minutes.
+  - platform: template
+    id: timer_ringing
+    name: Timer ringing
+    icon: mdi:alarm-bell
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    entity_category: diagnostic
+    on_turn_on:
+      - lambda: |-
+          id(speaker_media_player)
+              ->make_call()
+              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
+              .set_announcement(true)
+              .perform();
+          id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 1000);
+      - media_player.speaker.play_on_device_media_file:
+          media_file: test_sound
+          announcement: true
+      - delay: 2min
+      - switch.turn_off: timer_ringing
+    on_turn_off:
+      - lambda: |-
+          id(speaker_media_player)
+              ->make_call()
+              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
+              .set_announcement(true)
+              .perform();
+          id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
+      - media_player.stop:
+          id: speaker_media_player
+          announcement: true
+      - script.execute: set_idle_phase
+      - script.execute: draw_timer
   # HT6872 class-D amplifier enable. Always on, like the vendor firmware: with the duplex I2S
   # bus the codec clocks never stop, so there is nothing to pop.
   - platform: gpio
@@ -282,6 +318,8 @@ media_player:
         file: sounds/wake.flac
       - id: command_sound
         file: sounds/command.flac
+      - id: error_sound
+        file: sounds/error.flac
     # The microphone and speaker share one I2S bus, so the wake word engine must
     # release the microphone before playback starts, and resume afterwards.
     # With the duplex bus the microphone keeps running during playback, so the wake word
@@ -323,6 +361,7 @@ micro_wake_word:
     - hey_jarvis
   on_wake_word_detected:
     - script.execute: wake_screen
+    - switch.turn_off: timer_ringing
     - text_sensor.template.publish:
         id: last_wake_word
         state: !lambda return wake_word;
@@ -395,6 +434,9 @@ voice_assistant:
         id(voice_assistant_phase) = ${va_phase_error};
         id(error_shown_at) = millis();
     - script.execute: draw_display
+    - media_player.speaker.play_on_device_media_file:
+        media_file: error_sound
+        announcement: true
     - delay: 2s
     - script.execute: start_wake_word
     - script.execute: set_idle_phase
@@ -402,6 +444,20 @@ voice_assistant:
     - script.execute: start_wake_word
   on_client_disconnected:
     - voice_assistant.stop:
+  # Timers run on the device once Home Assistant has handed them over ("set a timer for 5 minutes").
+  on_timer_started:
+    - script.execute: draw_timer
+  on_timer_updated:
+    - script.execute: draw_timer
+  on_timer_cancelled:
+    - script.execute: draw_timer
+  on_timer_tick:
+    - script.execute: draw_timer
+  on_timer_finished:
+    - script.execute: wake_screen
+    - switch.turn_on: timer_ringing
+    - lambda: id(voice_assistant_phase) = ${va_phase_timer_done};
+    - script.execute: draw_display
 
 text_sensor:
   - platform: template
@@ -440,9 +496,31 @@ script:
             case ${va_phase_thinking}:  accent = 0xFFC400; label = "PROCESSING"; sub = "INTENT // LLM"; show_b = true; hollow = false; break;
             case ${va_phase_replying}:  accent = 0xFF2B74; label = "REPLYING";   sub = "TTS // PIPER";  hollow = false; break;
             case ${va_phase_error}:     accent = 0xFF3B3B; label = "FAULT";      sub = "PIPELINE ERROR"; break;
+            case ${va_phase_timer_done}: accent = 0xFF2B74; label = "TIMER DONE"; sub = "TAP TO DISMISS"; break;
             default:                    accent = 0xFF3B3B; label = "NO LINK";    sub = "WAITING FOR HOME ASSISTANT"; break;
           }
           lv_color_t c = lv_color_hex(accent);
+          const bool timer_done = id(voice_assistant_phase) == ${va_phase_timer_done};
+          const bool timer_core = id(timer_active) || timer_done;
+          // timer owns the ring: arc + digits instead of ring + disc
+          if (timer_core) {
+            lv_color_t tc = lv_color_hex(timer_done ? 0xFF2B74 : 0xFFC400);
+            lv_obj_set_style_arc_color(id(timer_arc), tc, LV_PART_INDICATOR);
+            lv_obj_set_style_text_color(id(timer_digits), tc, 0);
+            lv_obj_set_style_text_color(id(timer_tag), tc, 0);
+            if (timer_done) { lv_arc_set_value(id(timer_arc), 1000); lv_label_set_text(id(timer_digits), "00:00"); }
+            lv_obj_clear_flag(id(timer_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(timer_digits), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(timer_tag), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ring_main), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(phase_disc), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(timer_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(timer_digits), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(timer_tag), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ring_main), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(phase_disc), LV_OBJ_FLAG_HIDDEN);
+          }
           lv_obj_set_style_border_color(id(ring_main), c, 0);
           lv_obj_set_style_border_color(id(phase_disc), c, 0);
           lv_obj_set_style_bg_color(id(phase_disc), c, 0);
@@ -456,6 +534,24 @@ script:
           if (show_b) lv_obj_clear_flag(id(spin_b), LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(id(spin_b), LV_OBJ_FLAG_HIDDEN);
           lv_label_set_text(id(request_label), id(text_request).state.c_str());
           lv_label_set_text(id(response_label), id(text_response).state.c_str());
+  - id: draw_timer
+    mode: restart
+    then:
+      - lambda: |-
+          // The first active timer (the one that ends soonest) takes over the ring.
+          const voice_assistant::Timer *t = nullptr;
+          for (const auto &x : id(va).get_timers()) {
+            if (x.is_active && (t == nullptr || x.seconds_left < t->seconds_left)) t = &x;
+          }
+          id(timer_active) = (t != nullptr);
+          if (t != nullptr) {
+            uint32_t h = t->seconds_left / 3600, m = (t->seconds_left % 3600) / 60, sec = t->seconds_left % 60;
+            if (h > 0) lv_label_set_text_fmt(id(timer_digits), "%u:%02u:%02u", (unsigned) h, (unsigned) m, (unsigned) sec);
+            else lv_label_set_text_fmt(id(timer_digits), "%02u:%02u", (unsigned) m, (unsigned) sec);
+            uint32_t total = t->total_seconds > 0 ? t->total_seconds : 1;
+            lv_arc_set_value(id(timer_arc), (int32_t) (1000 * t->seconds_left / total));
+          }
+      - script.execute: draw_display
   - id: draw_volume
     mode: restart
     parameters:
@@ -563,6 +659,11 @@ font:
     size: 13
     bpp: 4
     glyphsets: [GF_Latin_Core]
+  - file: gfonts://Share+Tech+Mono
+    id: f_mono_34
+    size: 34
+    bpp: 4
+    glyphs: "0123456789:"
 
 image:
   - file: images/grid.png
@@ -638,12 +739,38 @@ touchscreen:
     display: lcd
     on_touch:
       - script.execute: wake_screen
+      - switch.turn_off: timer_ringing
     # From a 5-point tap test on 2026-10-11 (raw = 1.035*x + 5, raw = 0.976*y + 6).
     calibration:
       x_min: 5
       x_max: 336
       y_min: 6
       y_max: 474
+# Safety net for the status screen: event hooks (on_listening, on_end, on_error) are deferred
+# and can land in a different order than the state changes they describe. Converge to standby
+# whenever nothing is actually running (but leave a ringing timer alone).
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+              - switch.is_off: timer_ringing
+              - lambda: |-
+                  if (id(voice_assistant_phase) == ${va_phase_error} && millis() - id(error_shown_at) < 2000)
+                    return false;
+                  return id(voice_assistant_phase) != ${va_phase_idle} &&
+                         id(voice_assistant_phase) != ${va_phase_not_connected};
+          then:
+            - logger.log:
+                format: "status screen: phase %d while idle, correcting"
+                args: [id(voice_assistant_phase)]
+            - script.execute: set_idle_phase
+
 globals:
   - id: voice_assistant_phase
     type: int
@@ -651,6 +778,9 @@ globals:
   - id: error_shown_at
     type: uint32_t
     initial_value: "0"
+  - id: timer_active
+    type: bool
+    initial_value: "false"
 
 # ---------------------------------------------------------------------------
 # LVGL user interface (portrait 320x480)
@@ -838,6 +968,49 @@ lvgl:
             bg_opa: TRANSP
             border_width: 3
             border_color: 0x2B3647
+        # Timer: the main ring becomes an arc that empties clockwise, digits in the centre.
+        - arc:
+            id: timer_arc
+            align: TOP_MID
+            y: 74
+            width: 146
+            height: 146
+            min_value: 0
+            max_value: 1000
+            value: 1000
+            start_angle: 0
+            end_angle: 360
+            rotation: 270
+            adjustable: false
+            arc_width: 3
+            arc_color: 0x1A2433
+            bg_opa: TRANSP
+            hidden: true
+            indicator:
+              arc_color: 0xFFC400
+              arc_width: 3
+            knob:
+              bg_opa: TRANSP
+              border_width: 0
+              pad_all: 0
+        - label:
+            id: timer_digits
+            text: "00:00"
+            text_font: f_mono_34
+            text_color: 0xFFC400
+            text_letter_space: 1
+            align: TOP_MID
+            y: 126
+            hidden: true
+        - label:
+            id: timer_tag
+            text: "TIMER"
+            text_font: f_display_10
+            text_color: 0x4B5A6E
+            text_letter_space: 3
+            align: TOP_MID
+            y: 168
+            hidden: true
         - spinner:
             id: spin_a
             align: TOP_MID

@@ -59,7 +59,7 @@ Assist pipeline on the device page and say "Okay Nabu" or "Hey Jarvis".
 
 What the package gives you: the voice satellite with a HUD-style LVGL screen (state ring, the
 conversation as a terminal, mute button, segmented volume bar), short signal tones on wake word,
-recognised command and volume change, a "Backlight" light that dims after a minute, "Mute" and
+recognised command and volume change, voice timers with a countdown on screen and a chime loop, a "Backlight" light that dims after a minute, "Mute" and
 "Speaker amplifier" switches, "Restart", "Factory reset" and "Play test sound" buttons, and
 "Request", "Response" and "Last wake word" sensors.
 

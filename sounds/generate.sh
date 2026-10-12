@@ -2,6 +2,7 @@
 # Regenerates the synthesized UI sounds (16 kHz mono FLAC, the format the device plays as-is).
 # wake.flac:    two-note rise, played when a wake word is detected
 # command.flac: two-note fall, played when the command was recognised and after a volume change
+# error.flac:   low double buzz, played when the pipeline reports an error
 # timer_finished.flac is the Home Assistant Voice PE chime (Apache-2.0), downsampled, not generated here.
 set -e
 cd "$(dirname "$0")"
@@ -14,4 +15,8 @@ ffmpeg -loglevel error -y \
   -f lavfi -i "sine=frequency=988:duration=0.09,afade=t=in:d=0.005,afade=t=out:st=0.06:d=0.03,volume=0.55" \
   -f lavfi -i "sine=frequency=659:duration=0.11,afade=t=in:d=0.005,afade=t=out:st=0.06:d=0.05,volume=0.55" \
   -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1,$FMT" -ar 16000 -ac 1 -sample_fmt s16 command.flac
+ffmpeg -loglevel error -y \
+  -f lavfi -i "sine=frequency=196:duration=0.13,afade=t=in:d=0.005,afade=t=out:st=0.09:d=0.04,volume=0.6" \
+  -f lavfi -i "sine=frequency=147:duration=0.18,afade=t=in:d=0.005,afade=t=out:st=0.11:d=0.07,volume=0.6" \
+  -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1,$FMT" -ar 16000 -ac 1 -sample_fmt s16 error.flac
 for f in *.flac; do printf '%s: ' "$f"; ffprobe -v error -show_entries stream=sample_rate,channels,duration -of csv=p=0 "$f"; done
