@@ -64,6 +64,18 @@ recognised command and volume change, voice timers with a countdown in the ring 
 "Speaker amplifier" switches, "Restart", "Factory reset" and "Play test sound" buttons, a "Timer ringing" switch, and "Request",
 "Response" and "Last wake word" sensors.
 
+**Follow-up listening** (off by default): turn on the "Continue conversation" switch and the
+microphone stays open after every answer, so the next question needs no wake word. The outer
+ring drains over the "Follow-up timeout" (1 to 15 s, slider) with the seconds in the centre; speak
+and the countdown stops, stay silent and the device goes back to standby without an error tone.
+The chain continues as long as you keep talking. A tap on the screen or muting ends it. The upper
+limit is Home Assistant's own 15 s no-speech timeout. When the assistant asks you a question,
+Home Assistant reopens the microphone by itself regardless of the switch; with the switch on, that
+turn gets the same countdown and timeout. The package carries its own copy of ESPHome's
+`voice_assistant` component with two small fixes for that case (stock 2026.9.1 can cut an answer
+short and reopen the microphone when the answer starts streaming while the command chime is still
+playing).
+
 ## Custom wake words
 
 The package ships with "Okay Nabu" and "Hey Jarvis". To add your own, point `micro_wake_word`

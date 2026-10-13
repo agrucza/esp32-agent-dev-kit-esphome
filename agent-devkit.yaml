@@ -76,6 +76,7 @@ substitutions:
   va_phase_replying: "4"
   va_phase_error: "5"
   va_phase_timer_done: "6"
+  va_phase_follow_up: "7"
 
 esphome:
   name: ${name}
@@ -122,9 +123,11 @@ external_components:
   #   i2s_audio - ESPHome's own component plus a full-duplex mode (duplex: true), so the
   #               codec clocks never stop while microphone and speaker take turns
   #   mkpb2016ps - the board's IR proximity sensor (presence wakes the screen)
+  #   voice_assistant - ESPHome's own component with two fixes for "continue conversation"
+  #               (stale continue flag, TTS queued behind a chime), see the file header
   # examples/agent-devkit-local.yaml points components_source at the checkout instead.
   - source: ${components_source}
-    components: [aw9523, mipi_i80, i2s_audio, mkpb2016ps]
+    components: [aw9523, mipi_i80, i2s_audio, mkpb2016ps, voice_assistant]
     refresh: 1d
 
 dashboard_import:
@@ -182,6 +185,7 @@ switch:
     entity_category: config
     on_turn_on:
       - micro_wake_word.stop:
+      - script.execute: end_follow_up
       - lvgl.widget.update:
           id: mute_button
           state:
@@ -204,6 +208,18 @@ switch:
           text_color: 0x00E5FF
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
+  # Follow-up listening (what Alexa calls follow-up mode): after an answer the microphone
+  # stays open for "Follow-up timeout" seconds, so the next question needs no wake word.
+  # Chains as long as you keep talking; silence, a tap or an error ends it.
+  - platform: template
+    id: continue_conversation
+    name: Continue conversation
+    icon: mdi:comment-multiple-outline
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_off:
+      - script.execute: end_follow_up
   # Rings the timer chime in a loop until dismissed by touch, wake word, Home Assistant, or
   # after two minutes.
   - platform: template
@@ -371,6 +387,15 @@ micro_wake_word:
   on_wake_word_detected:
     - script.execute: wake_screen
     - switch.turn_off: timer_ringing
+    # A wake word always starts a plain request: drop any follow-up window state.
+    - script.stop: start_follow_up
+    - lambda: |-
+        id(follow_up_block) = false;
+        if (id(follow_up_active)) {
+          id(follow_up_active) = false;
+          id(voice_assistant_phase) = ${va_phase_listening};
+          id(draw_display).execute();
+        }
     - text_sensor.template.publish:
         id: last_wake_word
         state: !lambda return wake_word;
@@ -406,8 +431,19 @@ voice_assistant:
     - text_sensor.template.publish:
         id: text_response
         state: ""
-    - lambda: id(voice_assistant_phase) = ${va_phase_listening};
+    - lambda: |-
+        // A follow-up window keeps its countdown look until someone actually speaks.
+        if (!id(follow_up_active)) id(voice_assistant_phase) = ${va_phase_listening};
     - script.execute: draw_display
+  on_stt_vad_start:
+    # Someone started talking: the follow-up countdown is over, this is a normal request now.
+    - if:
+        condition:
+          lambda: return id(follow_up_active);
+        then:
+          - script.stop: start_follow_up
+          - lambda: id(voice_assistant_phase) = ${va_phase_listening};
+          - script.execute: draw_display
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${va_phase_thinking};
     - script.execute: draw_display
@@ -420,12 +456,14 @@ voice_assistant:
         state: !lambda return x;
     - script.execute: draw_display
   on_tts_start:
+    - lambda: id(follow_up_eligible) = true;
     - text_sensor.template.publish:
         id: text_response
         state: !lambda return x;
     - lambda: id(voice_assistant_phase) = ${va_phase_replying};
     - script.execute: draw_display
   on_end:
+    - script.stop: start_follow_up
     - wait_until:
         condition:
           - media_player.is_announcing:
@@ -436,24 +474,74 @@ voice_assistant:
                 media_player.is_announcing:
             - not:
                 speaker.is_playing:
-    - script.execute: start_wake_word
-    - script.execute: set_idle_phase
-    - script.execute: dim_after_conversation
+    # The voice assistant goes idle in the same loop pass as the speaker, so give it a moment.
+    # If it is still running after that, Home Assistant reopened the microphone itself (its
+    # "continue conversation" for questions); the window then only adds the countdown and
+    # the device-side timeout, voice_assistant.start is a no-op.
+    - wait_until:
+        condition:
+          not:
+            voice_assistant.is_running:
+        timeout: 1s
+    - if:
+        condition:
+          lambda: |-
+            // Open a follow-up window only after a run that actually spoke an answer
+            // (follow_up_eligible, set by on_tts_start). A run that ended any other way, for
+            // example cancelled by Home Assistant, must not reopen the microphone, or the two
+            // sides chase each other in a restart loop. Also not after a silent window or an
+            // error (follow_up_block), and not while muted.
+            const bool open = id(continue_conversation).state && id(follow_up_eligible) &&
+                              !id(follow_up_block) && !id(mute).state &&
+                              api::global_api_server->is_connected();
+            id(follow_up_eligible) = false;
+            id(follow_up_block) = false;
+            id(follow_up_active) = false;
+            return open;
+        then:
+          - script.execute: start_follow_up
+        else:
+          - script.execute: start_wake_word
+          - if:
+              condition:
+                not:
+                  voice_assistant.is_running:
+              then:
+                - script.execute: set_idle_phase
+          - script.execute: dim_after_conversation
   on_error:
+    - script.stop: start_follow_up
     - lambda: |-
-        id(voice_assistant_phase) = ${va_phase_error};
-        id(error_shown_at) = millis();
-    - script.execute: draw_display
-    - media_player.speaker.play_on_device_media_file:
-        media_file: error_sound
-        announcement: true
-    - delay: 2s
+        // A follow-up window that closes on silence is not a fault. Any other error ends the
+        // follow-up chain: no new window after the one that follows.
+        id(follow_up_silent) = id(follow_up_block) ||
+                               (id(follow_up_active) && code == "stt-no-text-recognized");
+        id(follow_up_active) = false;
+        id(follow_up_block) = true;
+    - if:
+        condition:
+          lambda: return id(follow_up_silent);
+        then:
+          - logger.log: "follow-up: window closed without speech"
+        else:
+          - lambda: |-
+              id(voice_assistant_phase) = ${va_phase_error};
+              id(error_shown_at) = millis();
+          - script.execute: draw_display
+          - media_player.speaker.play_on_device_media_file:
+              media_file: error_sound
+              announcement: true
+          - delay: 2s
     - script.execute: start_wake_word
     - script.execute: set_idle_phase
     - script.execute: dim_after_conversation
   on_client_connected:
     - script.execute: start_wake_word
   on_client_disconnected:
+    - script.stop: start_follow_up
+    - lambda: |-
+        id(follow_up_active) = false;
+        id(follow_up_block) = false;
     - voice_assistant.stop:
   # Timers run on the device once Home Assistant has handed them over ("set a timer for 5 minutes").
   on_timer_started:
@@ -501,6 +589,21 @@ number:
     step: 10
     initial_value: 65535
     unit_of_measurement: counts
+  # How long the follow-up window waits for the first word. Home Assistant gives up on its own
+  # after 15 s of silence, so the slider cannot go beyond that.
+  - platform: template
+    id: follow_up_timeout
+    name: Follow-up timeout
+    icon: mdi:timer-sand
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    min_value: 1
+    max_value: 15
+    step: 1
+    initial_value: 8
+    unit_of_measurement: s
+    mode: slider
 
 binary_sensor:
   - platform: template
@@ -566,6 +669,66 @@ script:
             - light.turn_on:
                 id: backlight
                 brightness: 15%
+  # Follow-up window: listen again without a wake word, drain the outer ring over
+  # "Follow-up timeout" seconds, and stop the pipeline if nobody has started talking by then.
+  - id: start_follow_up
+    mode: restart
+    then:
+      - lambda: |-
+          id(follow_up_active) = true;
+          id(voice_assistant_phase) = ${va_phase_follow_up};
+          const int secs = (int) id(follow_up_timeout).state;
+          const uint32_t ms = (uint32_t) secs * 1000;
+          lv_anim_del(id(follow_arc), nullptr);
+          lv_anim_del(id(follow_digits), nullptr);
+          lv_arc_set_value(id(follow_arc), 1000);
+          lv_label_set_text_fmt(id(follow_digits), "%d", secs);
+          // LVGL animates both the arc and the digits; no periodic code needed.
+          lv_anim_t a;
+          lv_anim_init(&a);
+          lv_anim_set_var(&a, id(follow_arc));
+          lv_anim_set_values(&a, 1000, 0);
+          lv_anim_set_time(&a, ms);
+          lv_anim_set_exec_cb(&a, [](void *obj, int32_t v) { lv_arc_set_value((lv_obj_t *) obj, v); });
+          lv_anim_start(&a);
+          lv_anim_t d;
+          lv_anim_init(&d);
+          lv_anim_set_var(&d, id(follow_digits));
+          lv_anim_set_values(&d, secs * 10, 0);
+          lv_anim_set_time(&d, ms);
+          lv_anim_set_exec_cb(&d, [](void *obj, int32_t v) {
+            lv_label_set_text_fmt((lv_obj_t *) obj, "%d", (int) ((v + 9) / 10));
+          });
+          lv_anim_start(&d);
+      - script.execute: wake_screen
+      - script.execute: draw_display
+      # The media player's on_idle may have re-armed the wake word engine a moment ago (the
+      # voice assistant can go idle before playback ends); the pipeline alone listens now.
+      - micro_wake_word.stop:
+      - voice_assistant.start:
+      - delay: !lambda return (uint32_t) id(follow_up_timeout).state * 1000;
+      - if:
+          condition:
+            lambda: return id(follow_up_active) && id(voice_assistant_phase) == ${va_phase_follow_up};
+          then:
+            - logger.log: "follow-up: nobody spoke, closing the window"
+            - script.execute: end_follow_up
+  # Close an open follow-up window (timeout, tap, mute, switch off). Stopping the pipeline makes
+  # Home Assistant answer with "no text recognized" and a run end, which on_error / on_end
+  # treat as a quiet end thanks to follow_up_block.
+  - id: end_follow_up
+    then:
+      - if:
+          condition:
+            lambda: return id(follow_up_active);
+          then:
+            - lambda: |-
+                id(follow_up_active) = false;
+                id(follow_up_block) = true;
+            - voice_assistant.stop:
+            - script.execute: start_wake_word
+            - script.execute: set_idle_phase
+            - script.execute: dim_after_conversation
   - id: draw_display
     mode: restart
     then:
@@ -593,6 +756,7 @@ script:
               if (id(mute).state) { label = de ? "STUMM" : "MUTED"; sub = de ? "MIKRO AUS" : "MIC CLOSED"; accent = 0xFF2B74; }
               break;
             case ${va_phase_listening}: accent = 0x00E5FF; label = de ? "HÖRE ZU" : "LISTENING";    sub = de ? "MIKRO OFFEN" : "MIC OPEN";       show_a = true; break;
+            case ${va_phase_follow_up}: accent = 0x00E5FF; label = de ? "HÖRE ZU" : "LISTENING";    sub = de ? "WEITER OHNE WECKWORT" : "NO WAKE WORD NEEDED"; break;
             case ${va_phase_thinking}:  accent = 0xFFC400; label = de ? "DENKE" : "PROCESSING";     sub = de ? "ABSICHT // LLM" : "INTENT // LLM"; show_b = true; hollow = false; break;
             case ${va_phase_replying}:  accent = 0xFF2B74; label = de ? "ANTWORTE" : "REPLYING";    sub = "TTS // PIPER";  hollow = false; break;
             case ${va_phase_error}:     accent = 0xFF3B3B; label = de ? "FEHLER" : "FAULT";         sub = de ? "PIPELINE-FEHLER" : "PIPELINE ERROR"; break;
@@ -620,6 +784,19 @@ script:
             lv_obj_add_flag(id(timer_tag), LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(id(ring_main), LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(id(phase_disc), LV_OBJ_FLAG_HIDDEN);
+          }
+          // follow-up window: the outer ring drains, the seconds sit in the hollow disc
+          if (id(voice_assistant_phase) == ${va_phase_follow_up}) {
+            lv_obj_clear_flag(id(follow_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+            if (timer_core) lv_obj_add_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_clear_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_anim_del(id(follow_arc), nullptr);
+            lv_anim_del(id(follow_digits), nullptr);
+            lv_obj_add_flag(id(follow_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
           }
           lv_obj_set_style_border_color(id(ring_main), c, 0);
           lv_obj_set_style_border_color(id(phase_disc), c, 0);
@@ -850,6 +1027,7 @@ touchscreen:
     on_touch:
       - script.execute: wake_screen
       - switch.turn_off: timer_ringing
+      - script.execute: end_follow_up
     # From a 5-point tap test on 2026-10-11 (raw = 1.035*x + 5, raw = 0.976*y + 6).
     calibration:
       x_min: 5
@@ -905,6 +1083,19 @@ globals:
   - id: timer_active
     type: bool
     initial_value: "false"
+  # Follow-up window state, see start_follow_up / end_follow_up.
+  - id: follow_up_active
+    type: bool
+    initial_value: "false"
+  - id: follow_up_block
+    type: bool
+    initial_value: "false"
+  - id: follow_up_silent
+    type: bool
+    initial_value: "false"
+  - id: follow_up_eligible
+    type: bool
+    initial_value: "false"
 
 # ---------------------------------------------------------------------------
 # LVGL user interface (portrait 320x480)
@@ -918,12 +1109,19 @@ lvgl:
   default_font: f_mono_13
   disp_bg_color: 0x070B12
   # Dim the backlight after a minute without touch; any touch or voice activity restores it.
+  # Not in the middle of a conversation, though (a follow-up chain easily runs longer than a
+  # minute): dim_after_conversation takes over once it ends.
   on_idle:
     - timeout: 60s
       then:
-        - light.turn_on:
-            id: backlight
-            brightness: 15%
+        - if:
+            condition:
+              not:
+                voice_assistant.is_running:
+            then:
+              - light.turn_on:
+                  id: backlight
+                  brightness: 15%
   pages:
     - id: main_page
       bg_color: 0x070B12
@@ -1082,6 +1280,31 @@ lvgl:
             border_width: 1
             border_color: 0x2B3647
             border_opa: 50%
+        # Follow-up window: the outer ring becomes an arc that drains while the microphone waits.
+        - arc:
+            id: follow_arc
+            align: TOP_MID
+            y: 64
+            width: 166
+            height: 166
+            min_value: 0
+            max_value: 1000
+            value: 1000
+            start_angle: 0
+            end_angle: 360
+            rotation: 270
+            adjustable: false
+            arc_width: 2
+            arc_color: 0x1A2433
+            bg_opa: TRANSP
+            hidden: true
+            indicator:
+              arc_color: 0x00E5FF
+              arc_width: 2
+            knob:
+              bg_opa: TRANSP
+              border_width: 0
+              pad_all: 0
         - obj:
             id: ring_main
             width: 146
@@ -1174,6 +1397,15 @@ lvgl:
             bg_opa: TRANSP
             border_width: 3
             border_color: 0x2B3647
+        - label:
+            id: follow_digits
+            text: "8"
+            text_font: f_display_20
+            text_color: 0x00E5FF
+            text_letter_space: 1
+            align: TOP_MID
+            y: 136
+            hidden: true
         - label:
             id: phase_label
             text: "NO LINK"

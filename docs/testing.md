@@ -91,4 +91,20 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 | I2 | Set it back to English | STANDBY, "> YOU", MUTE |
 | I3 | Wake word, then stay silent | After a few seconds: red FAULT (FEHLER), a low double buzz, then back to standby |
 
+## J. Follow-up listening ("Continue conversation" switch on, "Follow-up timeout" at 8 s)
+
+| # | Step | Expected |
+|---|---|---|
+| J1 | Wake word + question, then stay silent | After the answer: ring stays cyan, "LISTENING" / "NO WAKE WORD NEEDED", the thin outer ring drains and "8" counts down in the disc. At 0 the screen goes back to standby, no error tone, no red disc. Wake word works afterwards |
+| J2 | Wake word + question, then ask a second question during the countdown without a wake word | Countdown disappears as soon as you speak, the second question is answered, a new window opens after that answer |
+| J3 | Chain three questions this way, then stay silent | All three answered, then standby after the countdown |
+| J4 | During the countdown tap the screen | Window closes at once, standby, wake word works |
+| J5 | During the countdown toggle "Mute" | Window closes, MUTED screen; unmuting restarts the wake word |
+| J6 | Set the timeout to 3 s and repeat J1 | Countdown runs 3, 2, 1, screen back to standby after about 3 s |
+| J7 | Set the timeout to 15 s and repeat J1 | Countdown reaches 0 at the same time as Home Assistant gives up; still no error tone |
+| J8 | Start a 1 minute timer, then J1 | Timer digits keep the centre, only the outer ring drains; after the window the timer continues |
+| J9 | Switch "Continue conversation" off, then D1 | Old behaviour: standby right after the answer |
+| J10 | With the switch on, ask something that makes the assistant ask back (D3) | Home Assistant's own follow-up runs, the countdown ring shows for it too; answering works, ignoring it ends quietly |
+| J11 | Chain questions for longer than a minute without touching the screen | Backlight stays at full brightness for the whole conversation, dims 30 s after the last window closes |
+
 Record failures with the test number, what you heard or saw, and the time, so the log can be matched.

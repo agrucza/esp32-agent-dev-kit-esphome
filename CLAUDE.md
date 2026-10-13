@@ -10,8 +10,9 @@ HUD-style LVGL screen with touch, voice timers. No vendor cloud.
 
 - License: **Apache-2.0**. The voice parts derive from
   [esphome/wake-word-voice-assistants](https://github.com/esphome/wake-word-voice-assistants)
-  (ESP32-S3-BOX-3 config, Apache-2.0); `components/i2s_audio` is ESPHome's own component with a
-  duplex mode added; the test chime is the Home Assistant Voice PE timer sound.
+  (ESP32-S3-BOX-3 config, Apache-2.0); `components/i2s_audio` and `components/voice_assistant`
+  are ESPHome's own components with small changes (duplex mode; continue-conversation fixes);
+  the test chime is the Home Assistant Voice PE timer sound.
 - Repo language: **English** (public repo).
 - Status of every feature: the table in `README.md`. Keep it honest (✅ / ⚠️ / ❌).
 
@@ -64,6 +65,17 @@ github.com/wireless-tag-com/GTM.
   (`wait_until`, `mode: restart`). A plain `if` check loses the race with the speaker stop.
 - **Status screen**: event hooks arrive out of order; the 1 s interval converges the phase back
   to standby. Keep it.
+- **Follow-up window** (`start_follow_up` / `end_follow_up`): stopping the pipeline from the
+  device makes Home Assistant reply with `stt-no-text-recognized` and then a run end, so
+  `on_error` and `on_end` both fire. `follow_up_block` tells them to end quietly and not to open
+  another window; it is consumed in `on_end`. A window only opens after a run that spoke an
+  answer (`follow_up_eligible`), otherwise a cancelled run and the window chase each other.
+  Home Assistant's own no-speech limit is 15 s, which caps the "Follow-up timeout" slider.
+- **Vendored voice_assistant** (`components/voice_assistant`, ESPHome 2026.9.1): two fixes
+  marked `AD35_FIX`. Stock ESPHome keeps the previous turn's continue flag during the next
+  answer and, if the TTS URL is queued while the command chime is still announcing, ends the
+  response after 2 s and restarts the microphone mid-answer. Re-apply the two marked spots when
+  updating the copy for a new ESPHome release.
 - **Display**: 20 MHz pixel clock. 40 MHz garbles the image.
 
 ## Repo layout
@@ -80,7 +92,8 @@ github.com/wireless-tag-com/GTM.
 │   ├── aw9523/                 # IO expander hub, pin schema, LED output
 │   ├── i2s_audio/              # ESPHome's component + duplex mode
 │   ├── mipi_i80/               # 8080 display driver on esp_lcd
-│   └── mkpb2016ps/             # proximity sensor
+│   ├── mkpb2016ps/             # proximity sensor
+│   └── voice_assistant/        # ESPHome's component + two "continue conversation" fixes
 ├── sounds/                     # 16 kHz mono FLAC UI tones + generate.sh
 ├── images/grid.png             # HUD background tile
 └── docs/                       # pinout.md, stock-firmware.md, testing.md (manual test plan)
