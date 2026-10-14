@@ -4,9 +4,11 @@ Guidance for Claude (and humans) working in this repository.
 
 ## Project
 
-ESPHome configuration that turns the **Wireless-Tag ESP32 Agent Dev Kit (model AD35-S3)** into a
-local **Home Assistant voice satellite**: on-device wake word, Assist pipeline, TTS playback, a
-HUD-style LVGL screen with touch, voice timers. No vendor cloud.
+ESPHome configuration that turns the **Wireless-Tag ESP32 Agent Dev Kit (model AD35-S3)** or the
+**Espressif ESP32-S3-BOX-3** into a local **Home Assistant voice satellite**: on-device wake word,
+Assist pipeline, TTS playback, a HUD-style LVGL screen with touch, voice timers, follow-up
+listening. No vendor cloud. Both boards use the same ES7210 + ES8311 audio front end, so the
+voice pipeline and the HUD are shared packages; each board adds a hardware package and a layout.
 
 - License: **Apache-2.0**. The voice parts derive from
   [esphome/wake-word-voice-assistants](https://github.com/esphome/wake-word-voice-assistants)
@@ -14,7 +16,8 @@ HUD-style LVGL screen with touch, voice timers. No vendor cloud.
   are ESPHome's own components with small changes (duplex mode; continue-conversation fixes);
   the test chime is the Home Assistant Voice PE timer sound.
 - Repo language: **English** (public repo).
-- Status of every feature: the table in `README.md`. Keep it honest (✅ / ⚠️ / ❌).
+- Status of every feature and board: the tables in `README.md`. Keep them honest (✅ / ⚠️ / ❌).
+  The BOX-3 package has only been compiled so far, never run on a BOX-3 (as of 2026-10-13).
 
 ## Rules for working on the device
 
@@ -30,8 +33,50 @@ HUD-style LVGL screen with touch, voice timers. No vendor cloud.
 - Logs: `docker run --rm -it ... logs examples/agent-devkit-local.yaml --device 10.0.30.22`
   for a human. For automated capture read `/dev/ttyACM0` with pyserial (set DTR and RTS low
   before opening) rather than `docker logs`, whose output is block-buffered.
+- Docker writes as root into bind mounts. The user's own compiles left `.esphome/` and
+  `examples/.esphome/` root-owned; for builds run by Claude use `--user "$(id -u):$(id -g)"`
+  with `ESPHOME_DATA_DIR` pointing at a user-owned copy of the cache, never create root-owned
+  files in the repo.
 
-## Hardware (vendor schematic rev V1.1, all pins verified on hardware)
+## Package layout and the contract between the parts
+
+```
+agent-devkit.yaml, esp32-s3-box-3.yaml   entry per board: name, components_source, packages list,
+                                         dashboard_import
+packages/boards/<board>.yaml             hardware only: esp32/psram, logger uart, i2c, i2s, codecs,
+                                         mic/speaker, amplifier switch, display, backlight, touch,
+                                         board-specific sensors and keys
+packages/core.yaml                       esphome:, external_components (i2s_audio, voice_assistant),
+                                         api/ota/wifi/improv/captive_portal, restart + factory reset
+packages/voice.yaml                      media_player + sounds, micro_wake_word, voice_assistant,
+                                         mute / continue / timer_ringing switches, follow-up scripts,
+                                         phase globals, 1 s convergence interval
+packages/hud.yaml                        ui_language select, fonts, grid image, draw_* scripts,
+                                         screen_touched, backlight dimming, LVGL base block
+packages/hud/<layout>.yaml               lvgl.pages only (plus layout-specific fonts)
+```
+
+- A board package must provide the ids `box_mic`, `box_speaker` (16 kHz / 16 bit, one duplex
+  I2S bus, speaker `i2s_mode: secondary`), `lcd`, `touch`, `backlight`, and set the
+  `hud_title` substitution. It may call `screen_touched`, `wake_screen` (hud), `mute` (voice)
+  and `factory_reset_button` (core). Nothing else in the shared packages may reference
+  board hardware.
+- A layout must define every widget id listed at the top of `packages/hud.yaml` (the draw
+  scripts address them directly). Both panels are 320 px wide, so the top bar is identical.
+- `voice.yaml` never touches LVGL directly; screen changes go through the hud scripts
+  (`draw_display`, `draw_timer`, `draw_mute`, `draw_follow_up_countdown`, `wake_screen`,
+  `dim_after_conversation`). Keep it that way so a board without a screen stays possible.
+- File paths inside packages (`../sounds/*.flac`, `../images/grid.png`) are relative to the
+  package file; ESPHome falls back to "next to the declaring document" when the config dir
+  does not have them. This is what makes `github://` imports and `examples/` builds both work.
+- Substitutions are global after merging: pins live in the board file, `va_phase_*` in
+  `voice.yaml`, `name` / `friendly_name` / `components_source` in the entry file.
+- `external_components` is listed twice on purpose (core: shared copies, board: its drivers);
+  ESPHome merges the lists.
+
+## Hardware
+
+### Agent Dev Kit (vendor schematic rev V1.1, all pins verified on hardware)
 
 | Part | Component | Notes |
 |---|---|---|
@@ -52,12 +97,28 @@ Details and sources: `docs/pinout.md`. Stock firmware backup and partition table
 `docs/stock-firmware.md`. Vendor material (schematics, datasheets, example firmware):
 github.com/wireless-tag-com/GTM.
 
+### ESP32-S3-BOX-3 (upstream ESPHome config + Espressif esp-bsp `bsp/esp-box-3`, not yet verified here)
+
+| Part | Component | Notes |
+|---|---|---|
+| SoC | ESP32-S3 N16R8 | board `esp32s3box`, 16 MB flash, 8 MB octal PSRAM |
+| Mic ADC / speaker codec | ES7210 0x40 / ES8311 0x18 | same chips as the dev kit |
+| Amplifier enable | GPIO46 | strapping pin, output after boot |
+| Display | ILI9342C 320x240 | core `mipi_spi` model `S3BOX`: SPI CLK GPIO7, MOSI GPIO6, CS GPIO5, DC GPIO4, reset GPIO48 (inverted), 40 MHz |
+| Backlight | GPIO47 | `ledc` PWM |
+| Touch | GT911 | I2C 0x5D, INT GPIO3; BSP applies no mirroring for this controller |
+| Keys | GPIO0 boot, GPIO1 mute | mute is a hardware latch that cuts the mic; GPIO1 low = muted |
+| USB | native USB-JTAG | logger `USB_SERIAL_JTAG`; auto-reset behaviour on port open not checked |
+| I2C | | SDA GPIO8, SCL GPIO18 |
+| I2S | | MCLK GPIO2, BCLK GPIO17, LRCLK GPIO45, DOUT GPIO15, DIN GPIO16, 16 kHz / 16 bit (upstream: 48 kHz speaker) |
+
 ## Things that are easy to break
 
-- **Audio**: microphone and speaker share one I2S bus. Stock ESPHome tears the bus down on every
-  switch and the codec pops. `duplex: true` on the bus (our `components/i2s_audio`) creates one
-  TX+RX pair that never stops. Keep both at 16 kHz / 16 bit, speaker `i2s_mode: secondary`.
-  The ISR path uses a plain function pointer: a virtual call there crashes during OTA writes.
+- **Audio**: microphone and speaker share one I2S bus on both boards. Stock ESPHome tears the
+  bus down on every switch and the codec pops. `duplex: true` on the bus (our
+  `components/i2s_audio`) creates one TX+RX pair that never stops. Keep both at 16 kHz / 16 bit,
+  speaker `i2s_mode: secondary`. The ISR path uses a plain function pointer: a virtual call
+  there crashes during OTA writes.
 - **Bundled sounds** must be 16 kHz mono FLAC (`sounds/generate.sh`). The media player plays
   local files as they are; only Home Assistant's TTS is transcoded. A mismatched file jams the
   announcement queue and the assistant ends up transcribing its own answers.
@@ -76,39 +137,51 @@ github.com/wireless-tag-com/GTM.
   answer and, if the TTS URL is queued while the command chime is still announcing, ends the
   response after 2 s and restarts the microphone mid-answer. Re-apply the two marked spots when
   updating the copy for a new ESPHome release.
-- **Display**: 20 MHz pixel clock. 40 MHz garbles the image.
+- **Dev kit display**: 20 MHz pixel clock. 40 MHz garbles the image.
+- **Layouts**: a widget id missing from a layout only fails at `esphome config`; a changed
+  widget type (e.g. `line` needs `->obj`, plain widgets are `lv_obj_t *`) only fails at compile.
+  Validate and compile both boards after touching `hud.yaml` or a layout.
 
 ## Repo layout
 
 ```
 .
-├── agent-devkit.yaml           # the importable package (no secrets, github:// components)
+├── agent-devkit.yaml           # importable entry for the Agent Dev Kit (no secrets, github:// components)
+├── esp32-s3-box-3.yaml         # importable entry for the ESP32-S3-BOX-3
+├── packages/
+│   ├── boards/                 # agent-devkit.yaml, esp32-s3-box-3.yaml (hardware)
+│   ├── core.yaml               # platform, network, API, OTA, boot
+│   ├── voice.yaml              # wake word, voice assistant, sounds, follow-up, timers
+│   ├── hud.yaml                # fonts, draw scripts, LVGL base
+│   └── hud/                    # portrait-320x480.yaml, landscape-320x240.yaml (LVGL pages)
 ├── examples/
-│   ├── agent-devkit-local.yaml # developer build: package from this checkout + local.yaml
-│   └── minimal-i2c-scan.yaml   # milestone 1 bring-up config
+│   ├── agent-devkit-local.yaml     # developer build: entry from this checkout + local.yaml
+│   ├── esp32-s3-box-3-local.yaml   # same for the BOX-3
+│   └── minimal-i2c-scan.yaml       # dev kit milestone 1 bring-up config
 ├── local.yaml.example          # personal additions (custom wake words); copy to local.yaml, git-ignored
 ├── secrets.yaml.example        # copy to secrets.yaml, git-ignored
 ├── components/
-│   ├── aw9523/                 # IO expander hub, pin schema, LED output
-│   ├── i2s_audio/              # ESPHome's component + duplex mode
-│   ├── mipi_i80/               # 8080 display driver on esp_lcd
-│   ├── mkpb2016ps/             # proximity sensor
-│   └── voice_assistant/        # ESPHome's component + two "continue conversation" fixes
+│   ├── aw9523/                 # IO expander hub, pin schema, LED output (dev kit)
+│   ├── i2s_audio/              # ESPHome's component + duplex mode (both boards)
+│   ├── mipi_i80/               # 8080 display driver on esp_lcd (dev kit)
+│   ├── mkpb2016ps/             # proximity sensor (dev kit)
+│   └── voice_assistant/        # ESPHome's component + two "continue conversation" fixes (both)
 ├── sounds/                     # 16 kHz mono FLAC UI tones + generate.sh
 ├── images/grid.png             # HUD background tile
-└── docs/                       # pinout.md, stock-firmware.md, testing.md (manual test plan)
+└── docs/                       # pinout.md (dev kit), stock-firmware.md (dev kit), testing.md
 ```
 
 ## Build & flash
 
 ```bash
-# compile (no permission needed)
+# validate / compile (no permission needed); swap in esp32-s3-box-3-local.yaml for the BOX-3
+docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome config examples/agent-devkit-local.yaml
 docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome compile examples/agent-devkit-local.yaml
 
 # OTA (ask first)
 docker run --rm -v "$PWD":/config ghcr.io/esphome/esphome upload examples/agent-devkit-local.yaml --device 10.0.30.22
 
-# USB (ask first; bottom USB-C)
+# USB (ask first; dev kit: bottom USB-C)
 docker run --rm -v "$PWD":/config --device=/dev/ttyACM0 ghcr.io/esphome/esphome \
   run examples/agent-devkit-local.yaml --device /dev/ttyACM0
 ```
@@ -124,10 +197,14 @@ flash access (`docs/stock-firmware.md`).
   # https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
   # Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3)
   ```
-- `substitutions:` for every GPIO and I2C address; the pinout lives in one place.
-- The package must stay free of `!secret` and of local paths; users add `api`, `ota` (via
+- `substitutions:` for every GPIO and I2C address; a board's pinout lives in one place, its
+  board file.
+- A change to `core.yaml`, `voice.yaml` or `hud.yaml` affects both boards: validate both
+  examples, compile both, and test on whatever hardware is available. Say in the README which
+  board a change was tested on.
+- The packages must stay free of `!secret` and of local paths; users add `api`, `ota` (via
   `id: !extend ota_esphome`) and `wifi` themselves. Custom wake words go into the user's
-  config, never into the package.
+  config, never into the packages.
 - UI strings are bilingual (English, German) via the `ui_language` select; add both.
 - Note the ESPHome version a change was tested on (currently 2026.9.1, Home Assistant 2026.10).
 - Before a release: run `docs/testing.md`, then tag, and point the README snippet at the tag.
@@ -138,6 +215,6 @@ flash access (`docs/stock-firmware.md`).
 - Home Assistant 2026.10 at 10.0.40.30 (Proxmox VM) with an Assist pipeline using local STT
   (Wyoming faster-whisper), an OpenAI-compatible LLM conversation agent with "prefer handling
   commands locally" on (needed for timers), and local TTS (Wyoming Piper).
-- The device sits on the IOT VLAN at 10.0.30.22 (pfSense static mapping), this PC on
+- The Agent Dev Kit sits on the IOT VLAN at 10.0.30.22 (pfSense static mapping), this PC on
   10.0.20.x. No mDNS across VLANs: add the device by IP. HA needs TCP 6053 to the device, the
-  device needs HA's HTTP port (80 here) for TTS audio.
+  device needs HA's HTTP port (80 here) for TTS audio. No BOX-3 is on the network yet.

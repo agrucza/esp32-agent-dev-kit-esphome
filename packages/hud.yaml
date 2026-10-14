@@ -1,0 +1,309 @@
+# Based on the ESP32-S3-BOX-3 configuration from
+# https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
+# Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3)
+#
+# Shared package: the HUD. Fonts, the grid background, the LVGL base settings, backlight
+# dimming and every script that draws on the screen. Board-independent; it needs lcd, touch
+# and backlight from the board package and one layout from packages/hud/ that defines the
+# page with these widget ids:
+#
+#   link_dot, link_label                        top bar
+#   frame_tl, frame_tr, frame_bl, frame_br      corner brackets around the core
+#   ring_thin, follow_arc, follow_digits        outer ring, follow-up countdown
+#   ring_main, timer_arc, timer_digits, timer_tag   main ring, timer countdown
+#   spin_a, spin_b, phase_disc                  spinners and the centre disc
+#   phase_label, phase_sub                      state text
+#   you_tag, request_label, sys_tag, response_label   the terminal
+#   mute_button, mute_label                     mute toggle
+#   seg0 .. seg15, vol_value, volume_slider     volume bar
+#
+# The layout file may add fonts of its own. Phase values come from voice.yaml.
+
+select:
+  - platform: template
+    id: ui_language
+    name: UI language
+    icon: mdi:translate
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    options:
+      - English
+      - Deutsch
+    initial_option: English
+    on_value:
+      - script.execute: apply_language
+
+font:
+  # HUD typography: Orbitron for labels, Share Tech Mono for the terminal and values.
+  - file: gfonts://Orbitron@700
+    id: f_display_11
+    size: 11
+    bpp: 4
+  - file: gfonts://Orbitron@700
+    id: f_display_10
+    size: 10
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+  - file: gfonts://Orbitron@700
+    id: f_display_20
+    size: 20
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+  - file: gfonts://Share+Tech+Mono
+    id: f_mono_11
+    size: 11
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+  - file: gfonts://Share+Tech+Mono
+    id: f_mono_13
+    size: 13
+    bpp: 4
+    glyphsets: [GF_Latin_Core]
+
+image:
+  # Path relative to this file (ESPHome also looks next to the declaring document).
+  - platform: file
+    file: ../images/grid.png
+    id: grid_img
+    type: RGB565
+
+script:
+  - id: wake_screen
+    mode: restart
+    then:
+      - script.stop: dim_after_conversation
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+  # Dim 30 s after a conversation or a dismissed timer; touch and wake word cancel it.
+  - id: dim_after_conversation
+    mode: restart
+    then:
+      - delay: 30s
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - switch.is_off: timer_ringing
+          then:
+            - light.turn_on:
+                id: backlight
+                brightness: 15%
+  # A tap on the screen (or a board's key): wake the screen, dismiss a ringing timer, close a
+  # follow-up window.
+  - id: screen_touched
+    then:
+      - script.execute: wake_screen
+      - switch.turn_off: timer_ringing
+      - script.execute: end_follow_up
+  # Mute toggle in the bottom bar follows the Mute switch.
+  - id: draw_mute
+    then:
+      - lambda: |-
+          const bool de = id(ui_language).current_option() == "Deutsch";
+          const bool muted = id(mute).state;
+          if (muted) lv_obj_add_state(id(mute_button), LV_STATE_CHECKED);
+          else lv_obj_clear_state(id(mute_button), LV_STATE_CHECKED);
+          lv_label_set_text(id(mute_label), muted ? (de ? "STUMM" : "MUTED") : (de ? "STUMM" : "MUTE"));
+          lv_obj_set_style_text_color(id(mute_label), lv_color_hex(muted ? 0x10060B : 0x00E5FF), 0);
+  # Follow-up window: drain the outer ring over "Follow-up timeout" seconds with the seconds
+  # in the centre. LVGL animates both; no periodic code needed.
+  - id: draw_follow_up_countdown
+    then:
+      - lambda: |-
+          const int secs = (int) id(follow_up_timeout).state;
+          const uint32_t ms = (uint32_t) secs * 1000;
+          lv_anim_del(id(follow_arc), nullptr);
+          lv_anim_del(id(follow_digits), nullptr);
+          lv_arc_set_value(id(follow_arc), 1000);
+          lv_label_set_text_fmt(id(follow_digits), "%d", secs);
+          lv_anim_t a;
+          lv_anim_init(&a);
+          lv_anim_set_var(&a, id(follow_arc));
+          lv_anim_set_values(&a, 1000, 0);
+          lv_anim_set_time(&a, ms);
+          lv_anim_set_exec_cb(&a, [](void *obj, int32_t v) { lv_arc_set_value((lv_obj_t *) obj, v); });
+          lv_anim_start(&a);
+          lv_anim_t d;
+          lv_anim_init(&d);
+          lv_anim_set_var(&d, id(follow_digits));
+          lv_anim_set_values(&d, secs * 10, 0);
+          lv_anim_set_time(&d, ms);
+          lv_anim_set_exec_cb(&d, [](void *obj, int32_t v) {
+            lv_label_set_text_fmt((lv_obj_t *) obj, "%d", (int) ((v + 9) / 10));
+          });
+          lv_anim_start(&d);
+  - id: draw_display
+    mode: restart
+    then:
+      - lambda: |-
+          // HUD colours per phase: accent, label, sub label
+          const bool de = id(ui_language).current_option() == "Deutsch";
+          uint32_t accent = 0x2B3647;
+          const char *label = de ? "BEREIT" : "STANDBY";
+          // Idle hint names the first configured wake word ("hey_sarah" -> HEY SARAH).
+          static char hint[48];
+          {
+            // First model that is enabled (Home Assistant's wake word selector switches them).
+            std::string word;
+            for (auto *m : id(mww).get_wake_words()) {
+              if (m->is_enabled()) { word = m->get_wake_word(); break; }
+            }
+            if (word.empty()) word = "OKAY NABU";
+            for (auto &c : word) c = (c == '_') ? ' ' : (char) toupper((unsigned char) c);
+            snprintf(hint, sizeof hint, "%s \"%s\"", de ? "SAG" : "SAY", word.c_str());
+          }
+          const char *sub = hint;
+          bool hollow = true; bool show_a = false, show_b = false;
+          switch (id(voice_assistant_phase)) {
+            case ${va_phase_idle}:
+              if (id(mute).state) { label = de ? "STUMM" : "MUTED"; sub = de ? "MIKRO AUS" : "MIC CLOSED"; accent = 0xFF2B74; }
+              break;
+            case ${va_phase_listening}: accent = 0x00E5FF; label = de ? "HÖRE ZU" : "LISTENING";    sub = de ? "MIKRO OFFEN" : "MIC OPEN";       show_a = true; break;
+            case ${va_phase_follow_up}: accent = 0x00E5FF; label = de ? "HÖRE ZU" : "LISTENING";    sub = de ? "WEITER OHNE WECKWORT" : "NO WAKE WORD NEEDED"; break;
+            case ${va_phase_thinking}:  accent = 0xFFC400; label = de ? "DENKE" : "PROCESSING";     sub = de ? "ABSICHT // LLM" : "INTENT // LLM"; show_b = true; hollow = false; break;
+            case ${va_phase_replying}:  accent = 0xFF2B74; label = de ? "ANTWORTE" : "REPLYING";    sub = "TTS // PIPER";  hollow = false; break;
+            case ${va_phase_error}:     accent = 0xFF3B3B; label = de ? "FEHLER" : "FAULT";         sub = de ? "PIPELINE-FEHLER" : "PIPELINE ERROR"; break;
+            case ${va_phase_timer_done}: accent = 0xFF2B74; label = de ? "TIMER FERTIG" : "TIMER DONE"; sub = de ? "TIPPEN ZUM BEENDEN" : "TAP TO DISMISS"; break;
+            default:                    accent = 0xFF3B3B; label = de ? "KEIN LINK" : "NO LINK";    sub = de ? "WARTE AUF HOME ASSISTANT" : "WAITING FOR HOME ASSISTANT"; break;
+          }
+          lv_color_t c = lv_color_hex(accent);
+          const bool timer_done = id(voice_assistant_phase) == ${va_phase_timer_done};
+          const bool timer_core = id(timer_active) || timer_done;
+          // timer owns the ring: arc + digits instead of ring + disc
+          if (timer_core) {
+            lv_color_t tc = lv_color_hex(timer_done ? 0xFF2B74 : 0xFFC400);
+            lv_obj_set_style_arc_color(id(timer_arc), tc, LV_PART_INDICATOR);
+            lv_obj_set_style_text_color(id(timer_digits), tc, 0);
+            lv_obj_set_style_text_color(id(timer_tag), tc, 0);
+            if (timer_done) { lv_arc_set_value(id(timer_arc), 1000); lv_label_set_text(id(timer_digits), "00:00"); }
+            lv_obj_clear_flag(id(timer_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(timer_digits), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(timer_tag), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ring_main), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(phase_disc), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(timer_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(timer_digits), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(timer_tag), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ring_main), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(phase_disc), LV_OBJ_FLAG_HIDDEN);
+          }
+          // follow-up window: the outer ring drains, the seconds sit in the hollow disc
+          if (id(voice_assistant_phase) == ${va_phase_follow_up}) {
+            lv_obj_clear_flag(id(follow_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+            if (timer_core) lv_obj_add_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_clear_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_anim_del(id(follow_arc), nullptr);
+            lv_anim_del(id(follow_digits), nullptr);
+            lv_obj_add_flag(id(follow_arc), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+          }
+          lv_obj_set_style_border_color(id(ring_main), c, 0);
+          lv_obj_set_style_border_color(id(phase_disc), c, 0);
+          lv_obj_set_style_bg_color(id(phase_disc), c, 0);
+          lv_obj_set_style_bg_opa(id(phase_disc), hollow ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+          lv_obj_t *frames[] = {id(frame_tl)->obj, id(frame_tr)->obj, id(frame_bl)->obj, id(frame_br)->obj};
+          for (auto *f : frames) lv_obj_set_style_line_color(f, c, 0);
+          lv_label_set_text(id(phase_label), label);
+          lv_obj_set_style_text_color(id(phase_label), id(voice_assistant_phase) == ${va_phase_idle} && !id(mute).state ? lv_color_hex(0xD7E3F0) : c, 0);
+          lv_label_set_text(id(phase_sub), sub);
+          if (show_a) lv_obj_clear_flag(id(spin_a), LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(id(spin_a), LV_OBJ_FLAG_HIDDEN);
+          if (show_b) lv_obj_clear_flag(id(spin_b), LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(id(spin_b), LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(id(request_label), id(text_request).state.c_str());
+          lv_label_set_text(id(response_label), id(text_response).state.c_str());
+          // top bar: Home Assistant link
+          const bool up = api::global_api_server->is_connected();
+          lv_color_t lc = lv_color_hex(up ? 0x00E5FF : 0xFF3B3B);
+          lv_obj_set_style_bg_color(id(link_dot), lc, 0);
+          lv_obj_set_style_text_color(id(link_label), lc, 0);
+          lv_label_set_text(id(link_label), up ? "HA LINK" : "NO LINK");
+  - id: apply_language
+    mode: restart
+    then:
+      - lambda: |-
+          const bool de = id(ui_language).current_option() == "Deutsch";
+          lv_label_set_text(id(you_tag), de ? "> DU" : "> YOU");
+      - script.execute: draw_mute
+      - script.execute: draw_display
+  - id: draw_timer
+    mode: restart
+    then:
+      - lambda: |-
+          // The first active timer (the one that ends soonest) takes over the ring.
+          const voice_assistant::Timer *t = nullptr;
+          for (const auto &x : id(va).get_timers()) {
+            if (x.is_active && (t == nullptr || x.seconds_left < t->seconds_left)) t = &x;
+          }
+          id(timer_active) = (t != nullptr);
+          if (t != nullptr) {
+            uint32_t h = t->seconds_left / 3600, m = (t->seconds_left % 3600) / 60, sec = t->seconds_left % 60;
+            if (h > 0) lv_label_set_text_fmt(id(timer_digits), "%u:%02u:%02u", (unsigned) h, (unsigned) m, (unsigned) sec);
+            else lv_label_set_text_fmt(id(timer_digits), "%02u:%02u", (unsigned) m, (unsigned) sec);
+            uint32_t total = t->total_seconds > 0 ? t->total_seconds : 1;
+            lv_arc_set_value(id(timer_arc), (int32_t) (1000 * t->seconds_left / total));
+          }
+      - script.execute: draw_display
+  - id: draw_volume
+    mode: restart
+    parameters:
+      level: int
+    then:
+      - lambda: |-
+          lv_obj_t *segs[] = {id(seg0), id(seg1), id(seg2), id(seg3), id(seg4), id(seg5), id(seg6), id(seg7),
+                              id(seg8), id(seg9), id(seg10), id(seg11), id(seg12), id(seg13), id(seg14), id(seg15)};
+          int lit = (level * 16 + 50) / 100;
+          for (int i = 0; i < 16; i++) {
+            uint32_t col = i >= lit ? 0x1A2433 : (i >= 11 ? 0xFF2B74 : 0x00E5FF);
+            lv_obj_set_style_bg_color(segs[i], lv_color_hex(col), 0);
+          }
+          lv_label_set_text_fmt(id(vol_value), "%d", level);
+
+interval:
+  # Redraw the idle hint when Home Assistant enables or disables wake words.
+  - interval: 2s
+    then:
+      - lambda: |-
+          uint32_t sig = 0;
+          for (auto *m : id(mww).get_wake_words()) sig = (sig << 1) | (m->is_enabled() ? 1 : 0);
+          if (sig != id(wake_word_signature)) {
+            id(wake_word_signature) = sig;
+            id(draw_display).execute();
+          }
+
+globals:
+  - id: wake_word_signature
+    type: uint32_t
+    initial_value: "0xFFFFFFFF"
+  - id: timer_active
+    type: bool
+    initial_value: "false"
+
+lvgl:
+  displays: [lcd]
+  touchscreens: [touch]
+  buffer_size: 25%
+  color_depth: 16
+  byte_order: big_endian
+  default_font: f_mono_13
+  disp_bg_color: 0x070B12
+  # Dim the backlight after a minute without touch; any touch or voice activity restores it.
+  # Not in the middle of a conversation, though (a follow-up chain easily runs longer than a
+  # minute): dim_after_conversation takes over once it ends.
+  on_idle:
+    - timeout: 60s
+      then:
+        - if:
+            condition:
+              not:
+                voice_assistant.is_running:
+            then:
+              - light.turn_on:
+                  id: backlight
+                  brightness: 15%
+  # pages: come from the layout package (packages/hud/*.yaml)

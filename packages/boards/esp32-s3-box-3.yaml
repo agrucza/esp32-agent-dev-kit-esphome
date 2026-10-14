@@ -1,0 +1,241 @@
+# Based on the ESP32-S3-BOX-3 configuration from
+# https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
+# Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3), ported back to the BOX-3
+#
+# Hardware package for the Espressif ESP32-S3-BOX-3: everything that is specific to this
+# board. The shared packages (core, voice, hud) expect these ids from here:
+#
+#   box_mic / box_speaker   microphone and speaker, 16 kHz / 16 bit on one duplex I2S bus
+#   lcd / touch             display and touchscreen for LVGL
+#   backlight               a light the HUD dims and restores
+#
+# and this file calls these from the shared packages: mute (voice.yaml), screen_touched,
+# wake_screen (hud.yaml), factory_reset_button (core.yaml).
+#
+# Audio: ES7210 microphone ADC and ES8311 speaker DAC on one I2S bus (the same codecs as the
+# Agent Dev Kit, so the duplex bus applies here too), amplifier enable on GPIO46. ILI9342C
+# 320x240 display over SPI, GT911 touch, backlight PWM on GPIO47. The mute key on top is a
+# hardware latch that cuts the microphone; GPIO1 reports its state.
+#
+# Pinout source: the upstream ESPHome configuration and Espressif's board support package
+# (bsp/esp-box-3/include/bsp/esp-box-3.h in github.com/espressif/esp-bsp).
+# Status: compiles on ESPHome 2026.9.1; not yet run on a BOX-3. Touch orientation and the
+# 16 kHz speaker path in particular need a check on hardware.
+
+substitutions:
+  hud_title: "S3 // BOX-3"
+
+  # I2C (ES8311, ES7210, GT911 touch)
+  i2c_sda: GPIO8
+  i2c_scl: GPIO18
+  i2c_addr_es8311: "0x18"
+  i2c_addr_es7210: "0x40"
+
+  # I2S (shared by ES8311 and ES7210)
+  i2s_mclk: GPIO2
+  i2s_bclk: GPIO17
+  i2s_lrclk: GPIO45  # strapping pin, harmless as an output after boot
+  i2s_dout: GPIO15   # ESP -> ES8311
+  i2s_din: GPIO16    # ES7210 -> ESP
+
+  amp_enable: GPIO46  # strapping pin, harmless as an output after boot
+
+  # LCD: ILI9342C over SPI
+  lcd_clk: GPIO7
+  lcd_mosi: GPIO6
+  lcd_cs: GPIO5
+  lcd_dc: GPIO4
+  lcd_reset: GPIO48
+  lcd_backlight: GPIO47
+  touch_int: GPIO3
+
+  # Keys on the top edge
+  mute_status: GPIO1  # low while the hardware mute latch is engaged
+  boot_button: GPIO0
+
+esp32:
+  board: esp32s3box
+  variant: esp32s3
+  flash_size: 16MB
+  cpu_frequency: 240MHz
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  # The BOX-3's USB-C is the native USB port.
+  hardware_uart: USB_SERIAL_JTAG
+
+i2c:
+  - id: bus_a
+    sda: ${i2c_sda}
+    scl: ${i2c_scl}
+    frequency: 400kHz
+    scan: true
+
+# ---------------------------------------------------------------------------
+# Audio
+# ---------------------------------------------------------------------------
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin:
+      number: ${i2s_lrclk}
+      ignore_strapping_warning: true
+    i2s_bclk_pin: ${i2s_bclk}
+    i2s_mclk_pin: ${i2s_mclk}
+    # One TX+RX pair that runs from the first use on; see components/i2s_audio.
+    duplex: true
+
+audio_adc:
+  - platform: es7210
+    id: es7210_adc
+    i2c_id: bus_a
+    address: ${i2c_addr_es7210}
+    bits_per_sample: 16bit
+    sample_rate: 16000
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: bus_a
+    address: ${i2c_addr_es8311}
+    bits_per_sample: 16bit
+    sample_rate: 16000
+
+microphone:
+  - platform: i2s_audio
+    id: box_mic
+    i2s_audio_id: i2s_audio_bus
+    i2s_din_pin: ${i2s_din}
+    adc_type: external
+    sample_rate: 16000
+    bits_per_sample: 16bit
+
+speaker:
+  - platform: i2s_audio
+    id: box_speaker
+    i2s_audio_id: i2s_audio_bus
+    i2s_dout_pin: ${i2s_dout}
+    dac_type: external
+    audio_dac: es8311_dac
+    # Duplex bus: speaker and microphone share the clocks, so both run at 16 kHz / 16 bit.
+    # Upstream runs the BOX-3 speaker at 48 kHz; the media player resamples to this instead.
+    i2s_mode: secondary
+    sample_rate: 16000
+    bits_per_sample: 16bit
+    channel: left
+    buffer_duration: 100ms
+
+switch:
+  - platform: gpio
+    id: amplifier_enable
+    name: Speaker amplifier
+    icon: mdi:amplifier
+    restore_mode: ALWAYS_ON
+    entity_category: config
+    pin:
+      number: ${amp_enable}
+      ignore_strapping_warning: true
+
+# ---------------------------------------------------------------------------
+# Display: ILI9342C 320x240 over SPI, backlight PWM
+# ---------------------------------------------------------------------------
+spi:
+  - id: spi_bus
+    clk_pin: ${lcd_clk}
+    mosi_pin: ${lcd_mosi}
+
+display:
+  - platform: mipi_spi
+    id: lcd
+    model: S3BOX
+    spi_id: spi_bus
+    cs_pin: ${lcd_cs}
+    dc_pin: ${lcd_dc}
+    reset_pin:
+      number: ${lcd_reset}
+      inverted: true
+    data_rate: 40MHz
+    update_interval: never
+    auto_clear_enabled: false
+
+output:
+  - platform: ledc
+    id: backlight_output
+    pin: ${lcd_backlight}
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: Backlight
+    icon: mdi:brightness-6
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 300ms
+    initial_state:
+      brightness: 100%
+
+touchscreen:
+  # Espressif's BSP applies no mirroring to the GT911 on this board (the panel is mirrored
+  # instead, which the S3BOX model already does). If taps land mirrored, add
+  # transform: {mirror_x: true, mirror_y: true} here.
+  - platform: gt911
+    id: touch
+    i2c_id: bus_a
+    interrupt_pin:
+      number: ${touch_int}
+      ignore_strapping_warning: true  # GPIO3, an input here
+    display: lcd
+    on_touch:
+      - script.execute: screen_touched
+
+# ---------------------------------------------------------------------------
+# Keys
+# ---------------------------------------------------------------------------
+binary_sensor:
+  # The mute key toggles a hardware latch that cuts the microphone. Mirror it into the Mute
+  # switch so the screen and Home Assistant show the real state. The software switch alone
+  # cannot release the latch; press the key again for that.
+  - platform: gpio
+    id: hardware_mute
+    name: Hardware mute
+    icon: mdi:microphone-off
+    entity_category: diagnostic
+    pin:
+      number: ${mute_status}
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      - switch.turn_on: mute
+    on_release:
+      - switch.turn_off: mute
+  # Boot key: a short press acts like a tap on the screen (dismiss a ringing timer, close a
+  # follow-up window, wake the screen); holding it for 10 s factory resets the device.
+  - platform: gpio
+    id: boot_key
+    internal: true
+    pin:
+      number: ${boot_button}
+      ignore_strapping_warning: true
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_multi_click:
+      - timing:
+          - ON for at least 50ms
+          - OFF for at least 50ms
+        then:
+          - script.execute: screen_touched
+      - timing:
+          - ON for at least 10s
+        then:
+          - button.press: factory_reset_button

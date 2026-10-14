@@ -1,0 +1,78 @@
+# Based on the ESP32-S3-BOX-3 configuration from
+# https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
+# Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3)
+#
+# Shared package: platform, network, API, OTA and the boot sequence. Board-independent;
+# the board package provides esp32:, psram:, logger.hardware_uart and the hardware.
+#
+# Ids used from the other packages: mww, start_wake_word, set_idle_phase (voice.yaml),
+# draw_volume, apply_language (hud.yaml).
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  min_version: 2026.9.0
+  project:
+    name: agrucza.esphome-voice-satellite-hud
+    version: "1.1.0"
+  on_boot:
+    priority: -100
+    then:
+      # micro_wake_word loads its models late; wait for it instead of guessing a delay.
+      - wait_until:
+          condition:
+            lambda: return id(mww).is_ready();
+          timeout: 10s
+      - script.execute: start_wake_word
+      - script.execute: set_idle_phase
+      - script.execute:
+          id: draw_volume
+          level: 50
+      - script.execute: apply_language
+
+external_components:
+  # ESPHome's own components with small changes, kept in this repo (Apache-2.0):
+  #   i2s_audio       - plus a full-duplex mode (duplex: true), so the codec clocks never
+  #                     stop while microphone and speaker take turns
+  #   voice_assistant - two fixes for "continue conversation" (stale continue flag, TTS
+  #                     queued behind a chime), see the file header
+  # The board package lists its own drivers from the same source. examples/*-local.yaml point
+  # components_source at the checkout instead of GitHub.
+  - source: ${components_source}
+    components: [i2s_audio, voice_assistant]
+    refresh: 1d
+
+logger:
+  level: DEBUG
+
+# Users add their own encryption key under api: in their config.
+api:
+  on_client_connected:
+    - script.execute: start_wake_word
+    - script.execute: set_idle_phase
+  on_client_disconnected:
+    - script.execute: set_idle_phase
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+
+# Users add ssid/password under wifi: in their config; the fallback hotspot is open.
+wifi:
+  # Mains powered voice satellite: keep latency low.
+  power_save_mode: none
+  ap:
+
+improv_serial:
+
+captive_portal:
+
+button:
+  - platform: restart
+    name: Restart
+    entity_category: diagnostic
+  - platform: factory_reset
+    id: factory_reset_button
+    name: Factory reset
+    entity_category: diagnostic

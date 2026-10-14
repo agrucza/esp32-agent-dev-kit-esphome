@@ -1,0 +1,50 @@
+# Based on the ESP32-S3-BOX-3 configuration from
+# https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
+# Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3), ported back to the BOX-3
+#
+# Importable package for the Espressif ESP32-S3-BOX-3. Minimal user config:
+#
+#   substitutions:
+#     name: s3-box-3
+#     friendly_name: S3 Box 3
+#   packages:
+#     satellite: github://agrucza/esphome-voice-satellite-hud/esp32-s3-box-3.yaml@main
+#   esphome:
+#     name: ${name}
+#     name_add_mac_suffix: false
+#   api:
+#     encryption:
+#       key: !secret api_encryption_key
+#   ota:
+#     - id: !extend ota_esphome
+#       encryption:
+#         key: !secret api_encryption_key
+#   wifi:
+#     ssid: !secret wifi_ssid
+#     password: !secret wifi_password
+#
+# This file only wires the pieces together:
+#   packages/boards/esp32-s3-box-3.yaml   hardware: pins, codecs, display, touch, backlight, buttons
+#   packages/core.yaml                    platform, network, API, OTA, boot sequence
+#   packages/voice.yaml                   wake word, voice assistant, sounds, follow-up, timers
+#   packages/hud.yaml                     fonts, draw scripts, LVGL base
+#   packages/hud/landscape-320x240.yaml   the screen layout for this board's panel
+#
+# Tested on: ESPHome 2026.9.1 + Home Assistant 2026.10.1 (2026-10-13, see README for open points).
+
+substitutions:
+  name: s3-box-3
+  friendly_name: S3 Box 3
+  # Where the external components come from. Local development overrides this with a path.
+  components_source: github://agrucza/esphome-voice-satellite-hud@main
+
+packages:
+  board: !include packages/boards/esp32-s3-box-3.yaml
+  core: !include packages/core.yaml
+  voice: !include packages/voice.yaml
+  hud: !include packages/hud.yaml
+  layout: !include packages/hud/landscape-320x240.yaml
+
+dashboard_import:
+  package_import_url: github://agrucza/esphome-voice-satellite-hud/esp32-s3-box-3.yaml@main
+  import_full_config: false

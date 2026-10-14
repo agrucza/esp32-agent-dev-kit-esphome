@@ -2,8 +2,11 @@
 
 Run after every firmware change that touches audio, the wake word chain or the display.
 One test at a time, wait for the device to settle (idle screen, no sound) between tests.
+The plan applies to both boards; on the ESP32-S3-BOX-3 the boot key counts as a tap on the
+screen wherever a step says to tap, and the mute key must additionally toggle the Mute switch.
 
-Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/esphome/esphome logs agent-devkit.yaml --device <ip>`
+Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/esphome/esphome logs examples/agent-devkit-local.yaml --device <ip>`
+(or `examples/esp32-s3-box-3-local.yaml`)
 (over Wi-Fi, so the serial auto-reset cannot interfere). Entity states are visible on the device page in Home Assistant.
 
 ## A. Boot

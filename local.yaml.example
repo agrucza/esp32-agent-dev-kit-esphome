@@ -1,5 +1,5 @@
 # Personal additions for the developer build. Copy to local.yaml in the repo root (git-ignored).
-# Everything here is merged on top of agent-devkit.yaml.
+# Everything here is merged on top of the board package (agent-devkit.yaml or esp32-s3-box-3.yaml).
 
 # Custom wake words: each entry points at a micro-wake-word v2 manifest (.json) with the
 # .tflite next to it. GitHub shorthand or a raw URL both work, local paths are relative to

@@ -1,5 +1,5 @@
-# Developer config: builds the package from this checkout instead of GitHub.
-# Copy secrets.yaml.example to secrets.yaml first (a symlink in examples/ pointing at
+# Developer config for the Agent Dev Kit: builds the package from this checkout instead of
+# GitHub. Copy secrets.yaml.example to secrets.yaml first (a symlink in examples/ pointing at
 # ../secrets.yaml works too). Build and flash with:
 #   docker run --rm -v "$PWD":/config --device=/dev/ttyACM0 ghcr.io/esphome/esphome \
 #     run examples/agent-devkit-local.yaml --device /dev/ttyACM0
@@ -11,7 +11,7 @@ substitutions:
   components_source: ../components
 
 packages:
-  agent_devkit: !include ../agent-devkit.yaml
+  satellite: !include ../agent-devkit.yaml
   # Personal additions that stay out of git (custom wake words etc.).
   # Copy local.yaml.example to local.yaml in the repo root; it is git-ignored.
   local: !include ../local.yaml

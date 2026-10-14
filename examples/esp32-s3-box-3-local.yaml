@@ -1,0 +1,39 @@
+# Developer config for the ESP32-S3-BOX-3: builds the package from this checkout instead of
+# GitHub. Copy secrets.yaml.example to secrets.yaml first (a symlink in examples/ pointing at
+# ../secrets.yaml works too). Build and flash with (the BOX-3 enumerates as a native USB
+# serial port, usually /dev/ttyACM0):
+#   docker run --rm -v "$PWD":/config --device=/dev/ttyACM0 ghcr.io/esphome/esphome \
+#     run examples/esp32-s3-box-3-local.yaml --device /dev/ttyACM0
+
+substitutions:
+  name: s3-box-3
+  friendly_name: S3 Box 3
+  # Use the components from the checkout, not from GitHub.
+  components_source: ../components
+
+packages:
+  satellite: !include ../esp32-s3-box-3.yaml
+  # Personal additions that stay out of git (custom wake words etc.).
+  # Copy local.yaml.example to local.yaml in the repo root; it is git-ignored.
+  local: !include ../local.yaml
+
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+
+dashboard_import: !remove
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - id: !extend ota_esphome
+    encryption:
+      key: !secret api_encryption_key
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    password: !secret ap_password

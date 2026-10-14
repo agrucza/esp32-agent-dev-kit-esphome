@@ -1,0 +1,467 @@
+# Based on the ESP32-S3-BOX-3 configuration from
+# https://github.com/esphome/wake-word-voice-assistants (Apache-2.0)
+# Modified for the Wireless-Tag ESP32 Agent Dev Kit (AD35-S3)
+#
+# Shared package: the voice satellite. Wake word engine, voice assistant pipeline, media
+# player with the bundled sounds, mute, follow-up listening, timers, and the phase state
+# the HUD draws. Board-independent; it needs box_mic and box_speaker from the board package
+# (16 kHz / 16 bit, see the board files).
+#
+# Screen updates go through scripts in hud.yaml: draw_display, draw_timer, draw_mute,
+# draw_follow_up_countdown, wake_screen, dim_after_conversation.
+
+substitutions:
+  # Voice assistant UI phases (see globals.voice_assistant_phase)
+  va_phase_not_connected: "0"
+  va_phase_idle: "1"
+  va_phase_listening: "2"
+  va_phase_thinking: "3"
+  va_phase_replying: "4"
+  va_phase_error: "5"
+  va_phase_timer_done: "6"
+  va_phase_follow_up: "7"
+
+switch:
+  - platform: template
+    id: mute
+    name: Mute
+    icon: mdi:microphone-off
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - micro_wake_word.stop:
+      - script.execute: end_follow_up
+      - script.execute: draw_mute
+      - script.execute: set_idle_phase
+    on_turn_off:
+      - script.execute: draw_mute
+      - script.execute: start_wake_word
+      - script.execute: set_idle_phase
+  # Follow-up listening (what Alexa calls follow-up mode): after an answer the microphone
+  # stays open for "Follow-up timeout" seconds, so the next question needs no wake word.
+  # Chains as long as you keep talking; silence, a tap or an error ends it.
+  - platform: template
+    id: continue_conversation
+    name: Continue conversation
+    icon: mdi:comment-multiple-outline
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_off:
+      - script.execute: end_follow_up
+  # Rings the timer chime in a loop until dismissed by touch, wake word, Home Assistant, or
+  # after two minutes.
+  - platform: template
+    id: timer_ringing
+    name: Timer ringing
+    icon: mdi:alarm-bell
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    entity_category: diagnostic
+    on_turn_on:
+      - lambda: |-
+          id(speaker_media_player)
+              ->make_call()
+              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
+              .set_announcement(true)
+              .perform();
+          id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 1000);
+      - media_player.speaker.play_on_device_media_file:
+          media_file: test_sound
+          announcement: true
+      - delay: 2min
+      - switch.turn_off: timer_ringing
+    on_turn_off:
+      - lambda: |-
+          id(speaker_media_player)
+              ->make_call()
+              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
+              .set_announcement(true)
+              .perform();
+          id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
+      - media_player.stop:
+          id: speaker_media_player
+          announcement: true
+      - script.execute: set_idle_phase
+      - script.execute: draw_timer
+      - script.execute: dim_after_conversation
+
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: None
+    volume_min: 0.4
+    volume_max: 0.8
+    announcement_pipeline:
+      speaker: box_speaker
+      format: FLAC
+      sample_rate: 16000
+      num_channels: 1
+    # Bundled sounds must already match the announcement pipeline (16 kHz, mono): Home
+    # Assistant transcodes TTS to that format, local files are played as they are.
+    # timer_finished.flac is the Home Assistant Voice PE chime (Apache-2.0), downsampled.
+    # Paths are relative to this file (ESPHome also looks next to the declaring document).
+    files:
+      - id: test_sound
+        file: ../sounds/timer_finished.flac
+      - id: wake_sound
+        file: ../sounds/wake.flac
+      - id: command_sound
+        file: ../sounds/command.flac
+      - id: error_sound
+        file: ../sounds/error.flac
+    # With the duplex bus the microphone keeps running during playback, so the wake word
+    # stays armed and can interrupt an answer. Re-arm it when playback ends outside a run.
+    on_idle:
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - script.execute: start_wake_word
+
+button:
+  - platform: template
+    name: Restart wake word
+    icon: mdi:ear-hearing
+    entity_category: diagnostic
+    on_press:
+      - script.execute: start_wake_word
+  - platform: template
+    name: Play test sound
+    icon: mdi:music-note
+    on_press:
+      - media_player.speaker.play_on_device_media_file:
+          media_file: test_sound
+          announcement: true
+
+micro_wake_word:
+  id: mww
+  microphone: box_mic
+  # Stock models. Add your own in your config (see README, "Custom wake words"); package
+  # lists merge, so they are added to these. Home Assistant's wake word selector on the
+  # device page decides which of them are active.
+  models:
+    - okay_nabu
+    - hey_jarvis
+  on_wake_word_detected:
+    - script.execute: wake_screen
+    - switch.turn_off: timer_ringing
+    # A wake word always starts a plain request: drop any follow-up window state.
+    - script.stop: start_follow_up
+    - lambda: |-
+        id(follow_up_block) = false;
+        if (id(follow_up_active)) {
+          id(follow_up_active) = false;
+          id(voice_assistant_phase) = ${va_phase_listening};
+          id(draw_display).execute();
+        }
+    - text_sensor.template.publish:
+        id: last_wake_word
+        state: !lambda return wake_word;
+    - if:
+          condition:
+            api.connected:
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: wake_sound
+                announcement: true
+            - voice_assistant.start:
+                wake_word: !lambda return wake_word;
+          else:
+            # No Home Assistant yet: acknowledge with the chime and keep listening.
+            - media_player.speaker.play_on_device_media_file:
+                media_file: test_sound
+                announcement: true
+            - delay: 1s
+            - script.execute: start_wake_word
+
+voice_assistant:
+  id: va
+  microphone: box_mic
+  media_player: speaker_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_listening:
+    - text_sensor.template.publish:
+        id: text_request
+        state: ""
+    - text_sensor.template.publish:
+        id: text_response
+        state: ""
+    - lambda: |-
+        // A follow-up window keeps its countdown look until someone actually speaks.
+        if (!id(follow_up_active)) id(voice_assistant_phase) = ${va_phase_listening};
+    - script.execute: draw_display
+  on_stt_vad_start:
+    # Someone started talking: the follow-up countdown is over, this is a normal request now.
+    - if:
+        condition:
+          lambda: return id(follow_up_active);
+        then:
+          - script.stop: start_follow_up
+          - lambda: id(voice_assistant_phase) = ${va_phase_listening};
+          - script.execute: draw_display
+  on_stt_vad_end:
+    - lambda: id(voice_assistant_phase) = ${va_phase_thinking};
+    - script.execute: draw_display
+  on_stt_end:
+    - media_player.speaker.play_on_device_media_file:
+        media_file: command_sound
+        announcement: true
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: draw_display
+  on_tts_start:
+    - lambda: id(follow_up_eligible) = true;
+    - text_sensor.template.publish:
+        id: text_response
+        state: !lambda return x;
+    - lambda: id(voice_assistant_phase) = ${va_phase_replying};
+    - script.execute: draw_display
+  on_end:
+    - script.stop: start_follow_up
+    - wait_until:
+        condition:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    - wait_until:
+        - and:
+            - not:
+                media_player.is_announcing:
+            - not:
+                speaker.is_playing:
+    # The voice assistant goes idle in the same loop pass as the speaker, so give it a moment.
+    # If it is still running after that, Home Assistant reopened the microphone itself (its
+    # "continue conversation" for questions); the window then only adds the countdown and
+    # the device-side timeout, voice_assistant.start is a no-op.
+    - wait_until:
+        condition:
+          not:
+            voice_assistant.is_running:
+        timeout: 1s
+    - if:
+        condition:
+          lambda: |-
+            // Open a follow-up window only after a run that actually spoke an answer
+            // (follow_up_eligible, set by on_tts_start). A run that ended any other way, for
+            // example cancelled by Home Assistant, must not reopen the microphone, or the two
+            // sides chase each other in a restart loop. Also not after a silent window or an
+            // error (follow_up_block), and not while muted.
+            const bool open = id(continue_conversation).state && id(follow_up_eligible) &&
+                              !id(follow_up_block) && !id(mute).state &&
+                              api::global_api_server->is_connected();
+            id(follow_up_eligible) = false;
+            id(follow_up_block) = false;
+            id(follow_up_active) = false;
+            return open;
+        then:
+          - script.execute: start_follow_up
+        else:
+          - script.execute: start_wake_word
+          - if:
+              condition:
+                not:
+                  voice_assistant.is_running:
+              then:
+                - script.execute: set_idle_phase
+          - script.execute: dim_after_conversation
+  on_error:
+    - script.stop: start_follow_up
+    - lambda: |-
+        // A follow-up window that closes on silence is not a fault. Any other error ends the
+        // follow-up chain: no new window after the one that follows.
+        id(follow_up_silent) = id(follow_up_block) ||
+                               (id(follow_up_active) && code == "stt-no-text-recognized");
+        id(follow_up_active) = false;
+        id(follow_up_block) = true;
+    - if:
+        condition:
+          lambda: return id(follow_up_silent);
+        then:
+          - logger.log: "follow-up: window closed without speech"
+        else:
+          - lambda: |-
+              id(voice_assistant_phase) = ${va_phase_error};
+              id(error_shown_at) = millis();
+          - script.execute: draw_display
+          - media_player.speaker.play_on_device_media_file:
+              media_file: error_sound
+              announcement: true
+          - delay: 2s
+    - script.execute: start_wake_word
+    - script.execute: set_idle_phase
+    - script.execute: dim_after_conversation
+  on_client_connected:
+    - script.execute: start_wake_word
+  on_client_disconnected:
+    - script.stop: start_follow_up
+    - lambda: |-
+        id(follow_up_active) = false;
+        id(follow_up_block) = false;
+    - voice_assistant.stop:
+  # Timers run on the device once Home Assistant has handed them over ("set a timer for 5 minutes").
+  on_timer_started:
+    - script.execute: draw_timer
+  on_timer_updated:
+    - script.execute: draw_timer
+  on_timer_cancelled:
+    - script.execute: draw_timer
+  on_timer_tick:
+    - script.execute: draw_timer
+  on_timer_finished:
+    - script.execute: wake_screen
+    - switch.turn_on: timer_ringing
+    - lambda: id(voice_assistant_phase) = ${va_phase_timer_done};
+    - script.execute: draw_display
+
+number:
+  # How long the follow-up window waits for the first word. Home Assistant gives up on its own
+  # after 15 s of silence, so the slider cannot go beyond that.
+  - platform: template
+    id: follow_up_timeout
+    name: Follow-up timeout
+    icon: mdi:timer-sand
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    min_value: 1
+    max_value: 15
+    step: 1
+    initial_value: 8
+    unit_of_measurement: s
+    mode: slider
+
+text_sensor:
+  - platform: template
+    id: last_wake_word
+    name: Last wake word
+    icon: mdi:ear-hearing
+    entity_category: diagnostic
+  - platform: template
+    id: text_request
+    name: Request
+    icon: mdi:account-voice
+  - platform: template
+    id: text_response
+    name: Response
+    icon: mdi:reply
+
+script:
+  # Follow-up window: listen again without a wake word, count down "Follow-up timeout" seconds
+  # on the screen, and stop the pipeline if nobody has started talking by then.
+  - id: start_follow_up
+    mode: restart
+    then:
+      - lambda: |-
+          id(follow_up_active) = true;
+          id(voice_assistant_phase) = ${va_phase_follow_up};
+      - script.execute: draw_follow_up_countdown
+      - script.execute: wake_screen
+      - script.execute: draw_display
+      # The media player's on_idle may have re-armed the wake word engine a moment ago (the
+      # voice assistant can go idle before playback ends); the pipeline alone listens now.
+      - micro_wake_word.stop:
+      - voice_assistant.start:
+      - delay: !lambda return (uint32_t) id(follow_up_timeout).state * 1000;
+      - if:
+          condition:
+            lambda: return id(follow_up_active) && id(voice_assistant_phase) == ${va_phase_follow_up};
+          then:
+            - logger.log: "follow-up: nobody spoke, closing the window"
+            - script.execute: end_follow_up
+  # Close an open follow-up window (timeout, tap, mute, switch off). Stopping the pipeline makes
+  # Home Assistant answer with "no text recognized" and a run end, which on_error / on_end
+  # treat as a quiet end thanks to follow_up_block.
+  - id: end_follow_up
+    then:
+      - if:
+          condition:
+            lambda: return id(follow_up_active);
+          then:
+            - lambda: |-
+                id(follow_up_active) = false;
+                id(follow_up_block) = true;
+            - voice_assistant.stop:
+            - script.execute: start_wake_word
+            - script.execute: set_idle_phase
+            - script.execute: dim_after_conversation
+  - id: set_idle_phase
+    then:
+      - lambda: |-
+          id(voice_assistant_phase) = api::global_api_server->is_connected() ? ${va_phase_idle} : ${va_phase_not_connected};
+      - script.execute: draw_display
+  - id: start_wake_word
+    # The speaker stops and the voice assistant goes idle in the same loop pass, in that order,
+    # so a plain "is the VA running?" check at the moment playback ends races and loses.
+    # Wait for the VA to settle instead of checking once.
+    mode: restart
+    then:
+      - wait_until:
+          condition:
+            not:
+              - voice_assistant.is_running:
+          timeout: 10s
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - switch.is_off: mute
+          then:
+            - lambda: id(va).set_use_wake_word(false);
+            - micro_wake_word.start:
+          else:
+            - logger.log:
+                level: WARN
+                format: "start_wake_word: not restarting (voice assistant still running or muted)"
+
+# Safety net for the status screen: event hooks (on_listening, on_end, on_error) are deferred
+# and can land in a different order than the state changes they describe. Converge to standby
+# whenever nothing is actually running (but leave a ringing timer alone).
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  media_player.is_announcing:
+              - switch.is_off: timer_ringing
+              - lambda: |-
+                  if (id(voice_assistant_phase) == ${va_phase_error} && millis() - id(error_shown_at) < 2000)
+                    return false;
+                  return id(voice_assistant_phase) != ${va_phase_idle} &&
+                         id(voice_assistant_phase) != ${va_phase_not_connected};
+          then:
+            - logger.log:
+                format: "status screen: phase %d while idle, correcting"
+                args: [id(voice_assistant_phase)]
+            - script.execute: set_idle_phase
+
+globals:
+  - id: voice_assistant_phase
+    type: int
+    initial_value: ${va_phase_not_connected}
+  - id: error_shown_at
+    type: uint32_t
+    initial_value: "0"
+  # Follow-up window state, see start_follow_up / end_follow_up.
+  - id: follow_up_active
+    type: bool
+    initial_value: "false"
+  - id: follow_up_block
+    type: bool
+    initial_value: "false"
+  - id: follow_up_silent
+    type: bool
+    initial_value: "false"
+  - id: follow_up_eligible
+    type: bool
+    initial_value: "false"
