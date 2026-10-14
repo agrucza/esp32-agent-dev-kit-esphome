@@ -17,7 +17,8 @@ voice pipeline and the HUD are shared packages; each board adds a hardware packa
   the test chime is the Home Assistant Voice PE timer sound.
 - Repo language: **English** (public repo).
 - Status of every feature and board: the tables in `README.md`. Keep them honest (✅ / ⚠️ / ❌).
-  The BOX-3 package has only been compiled so far, never run on a BOX-3 (as of 2026-10-13).
+  The BOX-3 package ran on hardware on 2026-10-13/14 (conversations, follow-up, touch, mute key,
+  OTA, timers in every combination); only the boot key is still unverified there.
 
 ## Rules for working on the device
 
@@ -97,7 +98,7 @@ Details and sources: `docs/pinout.md`. Stock firmware backup and partition table
 `docs/stock-firmware.md`. Vendor material (schematics, datasheets, example firmware):
 github.com/wireless-tag-com/GTM.
 
-### ESP32-S3-BOX-3 (upstream ESPHome config + Espressif esp-bsp `bsp/esp-box-3`, not yet verified here)
+### ESP32-S3-BOX-3 (upstream ESPHome config + Espressif esp-bsp `bsp/esp-box-3`; audio, display, Wi-Fi verified 2026-10-13)
 
 | Part | Component | Notes |
 |---|---|---|
@@ -106,8 +107,8 @@ github.com/wireless-tag-com/GTM.
 | Amplifier enable | GPIO46 | strapping pin, output after boot |
 | Display | ILI9342C 320x240 | core `mipi_spi` model `S3BOX`: SPI CLK GPIO7, MOSI GPIO6, CS GPIO5, DC GPIO4, reset GPIO48 (inverted), 40 MHz |
 | Backlight | GPIO47 | `ledc` PWM |
-| Touch | GT911 | I2C 0x5D, INT GPIO3; BSP applies no mirroring for this controller |
-| Keys | GPIO0 boot, GPIO1 mute | mute is a hardware latch that cuts the mic; GPIO1 low = muted |
+| Touch | GT911 | I2C 0x5D, INT GPIO3, no transform needed (verified) |
+| Keys | GPIO0 boot, GPIO1 mute | mute is a hardware latch that cuts the mic AND resets the ES7210; GPIO1 low = muted; the board file re-runs `es7210_adc.setup()` on release |
 | USB | native USB-JTAG | logger `USB_SERIAL_JTAG`; auto-reset behaviour on port open not checked |
 | I2C | | SDA GPIO8, SCL GPIO18 |
 | I2S | | MCLK GPIO2, BCLK GPIO17, LRCLK GPIO45, DOUT GPIO15, DIN GPIO16, 16 kHz / 16 bit (upstream: 48 kHz speaker) |
@@ -132,11 +133,20 @@ github.com/wireless-tag-com/GTM.
   another window; it is consumed in `on_end`. A window only opens after a run that spoke an
   answer (`follow_up_eligible`), otherwise a cancelled run and the window chase each other.
   Home Assistant's own no-speech limit is 15 s, which caps the "Follow-up timeout" slider.
+  `follow_up_active` stays true after the user starts speaking into the window, until that
+  run ends; "window still waiting" is `follow_up_active && phase == follow_up`. Calling
+  `voice_assistant.stop` on a run that is streaming its answer cuts the answer off.
 - **Vendored voice_assistant** (`components/voice_assistant`, ESPHome 2026.9.1): two fixes
   marked `AD35_FIX`. Stock ESPHome keeps the previous turn's continue flag during the next
   answer and, if the TTS URL is queued while the command chime is still announcing, ends the
   response after 2 s and restarts the microphone mid-answer. Re-apply the two marked spots when
   updating the copy for a new ESPHome release.
+- **Timer chime**: `ring_timer` replays the chime itself. Do not go back to the media player's
+  "repeat one": it repeats whatever played last, so a TTS answer that arrived during the chime
+  took over the loop and repeated for two minutes. Announcements on the speaker media player
+  **replace** the one playing, they never queue: a chime fired mid-answer cuts the answer off,
+  so `ring_timer` waits for the voice assistant before every chime. `set_idle_phase` keeps the
+  TIMER DONE phase while `timer_ringing` is on; a timer ending mid-run sets `follow_up_block`.
 - **Dev kit display**: 20 MHz pixel clock. 40 MHz garbles the image.
 - **Layouts**: a widget id missing from a layout only fails at `esphome config`; a changed
   widget type (e.g. `line` needs `->obj`, plain widgets are `lv_obj_t *`) only fails at compile.
@@ -217,4 +227,4 @@ flash access (`docs/stock-firmware.md`).
   commands locally" on (needed for timers), and local TTS (Wyoming Piper).
 - The Agent Dev Kit sits on the IOT VLAN at 10.0.30.22 (pfSense static mapping), this PC on
   10.0.20.x. No mDNS across VLANs: add the device by IP. HA needs TCP 6053 to the device, the
-  device needs HA's HTTP port (80 here) for TTS audio. No BOX-3 is on the network yet.
+  device needs HA's HTTP port (80 here) for TTS audio. The BOX-3 is at 10.0.30.21 (DHCP).

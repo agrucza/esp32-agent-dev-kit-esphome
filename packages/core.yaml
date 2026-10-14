@@ -6,7 +6,7 @@
 # the board package provides esp32:, psram:, logger.hardware_uart and the hardware.
 #
 # Ids used from the other packages: mww, start_wake_word, set_idle_phase (voice.yaml),
-# draw_volume, apply_language (hud.yaml).
+# sync_volume, apply_language (hud.yaml).
 
 esphome:
   name: ${name}
@@ -26,9 +26,7 @@ esphome:
           timeout: 10s
       - script.execute: start_wake_word
       - script.execute: set_idle_phase
-      - script.execute:
-          id: draw_volume
-          level: 50
+      - script.execute: sync_volume
       - script.execute: apply_language
 
 external_components:

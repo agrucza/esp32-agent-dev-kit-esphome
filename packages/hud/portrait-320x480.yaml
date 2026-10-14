@@ -199,6 +199,31 @@ lvgl:
               bg_opa: TRANSP
               border_width: 0
               pad_all: 0
+        # Second timer: the outer ring becomes a thin amber arc for the next one in line.
+        - arc:
+            id: timer_arc2
+            align: TOP_MID
+            y: 64
+            width: 166
+            height: 166
+            min_value: 0
+            max_value: 1000
+            value: 1000
+            start_angle: 0
+            end_angle: 360
+            rotation: 270
+            adjustable: false
+            arc_width: 2
+            arc_color: 0x1A2433
+            bg_opa: TRANSP
+            hidden: true
+            indicator:
+              arc_color: 0xA07A00
+              arc_width: 2
+            knob:
+              bg_opa: TRANSP
+              border_width: 0
+              pad_all: 0
         - obj:
             id: ring_main
             width: 146
@@ -237,6 +262,7 @@ lvgl:
         - label:
             id: timer_digits
             text: "00:00"
+            long_mode: CLIP
             text_font: f_mono_34
             text_color: 0xFFC400
             text_letter_space: 1
@@ -418,7 +444,7 @@ lvgl:
                   text_font: f_mono_11
                   text_color: 0x4B5A6E
                   text_letter_space: 1
-                  x: 90
+                  x: 86
                   y: 12
               - label:
                   id: vol_value
@@ -430,9 +456,9 @@ lvgl:
                   y: 12
               - obj:
                   id: vol_segments
-                  x: 90
+                  x: 86
                   y: 30
-                  width: 218
+                  width: 222
                   height: 12
                   radius: 0
                   bg_opa: TRANSP
@@ -442,7 +468,7 @@ lvgl:
                   widgets:
                     - obj:
                         id: seg0
-                        width: 14
+                        width: 12
                         height: 12
                         x: 0
                         y: 0
@@ -451,135 +477,135 @@ lvgl:
                         bg_color: 0x1A2433
                     - obj:
                         id: seg1
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 17
+                        x: 14
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg2
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 34
+                        x: 28
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg3
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 51
+                        x: 42
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg4
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 68
+                        x: 56
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg5
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 85
+                        x: 70
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg6
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 102
+                        x: 84
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg7
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 119
+                        x: 98
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg8
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 136
+                        x: 112
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg9
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 153
+                        x: 126
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg10
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 170
+                        x: 140
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg11
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 187
+                        x: 154
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg12
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 204
+                        x: 168
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg13
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 221
+                        x: 182
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg14
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 238
+                        x: 196
                         y: 0
                         radius: 0
                         border_width: 0
                         bg_color: 0x1A2433
                     - obj:
                         id: seg15
-                        width: 14
+                        width: 12
                         height: 12
-                        x: 255
+                        x: 210
                         y: 0
                         radius: 0
                         border_width: 0
@@ -587,9 +613,9 @@ lvgl:
               # transparent slider on top of the segments for touch
               - slider:
                   id: volume_slider
-                  x: 86
+                  x: 82
                   y: 22
-                  width: 226
+                  width: 230
                   height: 28
                   min_value: 0
                   max_value: 100

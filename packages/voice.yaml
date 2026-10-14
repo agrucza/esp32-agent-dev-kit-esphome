@@ -7,7 +7,7 @@
 # the HUD draws. Board-independent; it needs box_mic and box_speaker from the board package
 # (16 kHz / 16 bit, see the board files).
 #
-# Screen updates go through scripts in hud.yaml: draw_display, draw_timer, draw_mute,
+# Screen updates go through scripts in hud.yaml: draw_display, draw_timer, draw_mute, sync_volume,
 # draw_follow_up_countdown, wake_screen, dim_after_conversation.
 
 substitutions:
@@ -50,8 +50,10 @@ switch:
     entity_category: config
     on_turn_off:
       - script.execute: end_follow_up
-  # Rings the timer chime in a loop until dismissed by touch, wake word, Home Assistant, or
-  # after two minutes.
+  # Rings the timer chime until dismissed by touch, wake word, Home Assistant, or after two
+  # minutes. The ring_timer script replays the chime itself rather than using the playlist's
+  # "repeat one": that mode repeats whatever played last, so a TTS answer that arrived during
+  # the chime hijacked the loop and the answer repeated instead (seen 2026-10-13).
   - platform: template
     id: timer_ringing
     name: Timer ringing
@@ -60,26 +62,9 @@ switch:
     restore_mode: ALWAYS_OFF
     entity_category: diagnostic
     on_turn_on:
-      - lambda: |-
-          id(speaker_media_player)
-              ->make_call()
-              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_ONE)
-              .set_announcement(true)
-              .perform();
-          id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 1000);
-      - media_player.speaker.play_on_device_media_file:
-          media_file: test_sound
-          announcement: true
-      - delay: 2min
-      - switch.turn_off: timer_ringing
+      - script.execute: ring_timer
     on_turn_off:
-      - lambda: |-
-          id(speaker_media_player)
-              ->make_call()
-              .set_command(media_player::MediaPlayerCommand::MEDIA_PLAYER_COMMAND_REPEAT_OFF)
-              .set_announcement(true)
-              .perform();
-          id(speaker_media_player)->set_playlist_delay_ms(speaker::AudioPipelineType::ANNOUNCEMENT, 0);
+      - script.stop: ring_timer
       - media_player.stop:
           id: speaker_media_player
           announcement: true
@@ -112,14 +97,21 @@ media_player:
       - id: error_sound
         file: ../sounds/error.flac
     # With the duplex bus the microphone keeps running during playback, so the wake word
-    # stays armed and can interrupt an answer. Re-arm it when playback ends outside a run.
+    # stays armed and can interrupt an answer. Re-arm it when playback ends outside a run
+    # (the chime loop idles every couple of seconds; skip it while the engine already runs).
     on_idle:
       - if:
           condition:
-            not:
-              voice_assistant.is_running:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - not:
+                  micro_wake_word.is_running:
           then:
             - script.execute: start_wake_word
+    # Any state change, including a volume set from Home Assistant: refresh the volume bar.
+    on_state:
+      - script.execute: sync_volume
 
 button:
   - platform: template
@@ -315,7 +307,24 @@ voice_assistant:
     - script.execute: draw_timer
   on_timer_finished:
     - script.execute: wake_screen
+    # Ring first (ring_timer waits for a running turn), then sort out the conversation state:
+    # a follow-up window still waiting for speech is closed right away so the chime does not
+    # wait for Home Assistant's 15 s silence limit; a turn in progress (an answer playing, or
+    # a request spoken into the window: follow_up_active stays set until that run ends, so
+    # the phase is the test, not the flag) finishes but must not open a window afterwards.
+    # Stopping a run that is streaming its answer would cut the answer off (seen 2026-10-14).
     - switch.turn_on: timer_ringing
+    - if:
+        condition:
+          lambda: return id(follow_up_active) && id(voice_assistant_phase) == ${va_phase_follow_up};
+        then:
+          - script.execute: end_follow_up
+        else:
+          - if:
+              condition:
+                voice_assistant.is_running:
+              then:
+                - lambda: id(follow_up_block) = true;
     - lambda: id(voice_assistant_phase) = ${va_phase_timer_done};
     - script.execute: draw_display
 
@@ -393,8 +402,36 @@ script:
   - id: set_idle_phase
     then:
       - lambda: |-
-          id(voice_assistant_phase) = api::global_api_server->is_connected() ? ${va_phase_idle} : ${va_phase_not_connected};
+          // A ringing timer owns the screen until it is dismissed, whatever else just ended.
+          if (id(timer_ringing).state) id(voice_assistant_phase) = ${va_phase_timer_done};
+          else id(voice_assistant_phase) = api::global_api_server->is_connected() ? ${va_phase_idle} : ${va_phase_not_connected};
       - script.execute: draw_display
+  # Chime, wait for it to finish, pause, again; about two minutes in total. Stopped by
+  # timer_ringing turning off. A new announcement replaces the one playing on this media
+  # player (nothing queues), so each chime first waits for a running voice assistant turn:
+  # a timer that ends mid-answer rings right after the answer instead of cutting it off.
+  - id: ring_timer
+    mode: restart
+    then:
+      - repeat:
+          count: 60
+          then:
+            - wait_until:
+                condition:
+                  not:
+                    voice_assistant.is_running:
+                timeout: 30s
+            - media_player.speaker.play_on_device_media_file:
+                media_file: test_sound
+                announcement: true
+            - delay: 300ms
+            - wait_until:
+                condition:
+                  not:
+                    media_player.is_announcing:
+                timeout: 30s
+            - delay: 1s
+      - switch.turn_off: timer_ringing
   - id: start_wake_word
     # The speaker stops and the voice assistant goes idle in the same loop pass, in that order,
     # so a plain "is the VA running?" check at the moment playback ends races and loses.

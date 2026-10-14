@@ -15,24 +15,26 @@ BOX-3 configuration is the reference for the voice parts.
 | Board | Package | Screen | Status |
 |---|---|---|---|
 | Wireless-Tag ESP32 Agent Dev Kit (AD35-S3) | `agent-devkit.yaml` | 320x480 portrait ST7796U, FT6336U touch | ✅ tested on hardware |
-| Espressif ESP32-S3-BOX-3 | `esp32-s3-box-3.yaml` | 320x240 landscape ILI9342C, GT911 touch | ⚠️ compiles, not yet run on a BOX-3 |
+| Espressif ESP32-S3-BOX-3 | `esp32-s3-box-3.yaml` | 320x240 landscape ILI9342C, GT911 touch | ✅ voice pipeline and HUD verified on hardware, see the table below for what is still open |
 
 ## Status
 
 | Feature | Agent Dev Kit | BOX-3 | Notes |
 |---|---|---|---|
-| Wi-Fi / API / OTA / logging | ✅ works | ⚠️ untested | encrypted OTA tested over Wi-Fi; dev kit logs on UART0 (bottom USB-C), BOX-3 on native USB |
-| Microphone (ES7210) | ✅ works | ⚠️ untested | full duplex with the speaker, stays on during playback |
-| Speaker (ES8311) | ✅ works | ⚠️ untested | no pops: duplex I2S keeps the codec clocks running; 16 kHz on both boards |
-| Wake word + voice assistant | ✅ works | ⚠️ untested | on-device wake word, Assist pipeline with local STT/LLM/TTS via Home Assistant |
-| Follow-up listening, timers, UI language | ✅ works | ⚠️ untested | shared package, see below |
-| Display + HUD | ✅ works | ⚠️ layout unverified | dev kit: own `mipi_i80` component; BOX-3: core `mipi_spi`, layout derived from the portrait one |
-| Touch | ✅ works | ⚠️ orientation unverified | dev kit: core `ft63x6`, 5-point calibration; BOX-3: core `gt911` |
+| Wi-Fi / API / OTA / logging | ✅ works | ✅ works | encrypted OTA tested on the dev kit; dev kit logs on UART0 (bottom USB-C), BOX-3 on native USB |
+| Microphone (ES7210) | ✅ works | ✅ works | full duplex with the speaker, stays on during playback |
+| Speaker (ES8311) | ✅ works | ✅ works | no pops: duplex I2S keeps the codec clocks running; 16 kHz on both boards |
+| Wake word + voice assistant | ✅ works | ✅ works | on-device wake word, Assist pipeline with local STT/LLM/TTS via Home Assistant |
+| Follow-up listening, timers, UI language | ✅ works | ✅ works | shared package, see below; multiple timers and timers ending mid-answer or mid-window verified on the BOX-3 (2026-10-14) |
+| Display + HUD | ✅ works | ✅ works | dev kit: own `mipi_i80` component; BOX-3: core `mipi_spi` with the landscape layout |
+| Touch | ✅ works | ✅ works | dev kit: core `ft63x6`, 5-point calibration; BOX-3: core `gt911` at 0x5D, no transform needed |
 | Proximity sensor (MK-PB2016PS) | ⚠️ reads, no reflection seen | – | dev kit only; presence wake disabled by default, see docs/pinout.md |
-| Hardware mute key, boot key | – | ⚠️ untested | BOX-3 only; the mute latch state is mirrored into the Mute switch |
+| Hardware mute key, boot key | – | ✅ mute key works; boot key not yet tried | BOX-3 only; the latch state is mirrored into the Mute switch and the ES7210 is re-initialised on release |
 
-Tested with: ESPHome 2026.9.1 and Home Assistant 2026.10 (Agent Dev Kit on hardware, BOX-3
-compile only, 2026-10-13).
+Tested with: ESPHome 2026.9.1 and Home Assistant 2026.10.1 (both boards on hardware, 2026-10-13/14).
+Home Assistant's voice wizard may report that the satellite cannot reach the server even though
+the test sound plays; that verdict comes from how HA's own internal URL resolves, not from the
+device. Skip it and try a real conversation.
 
 ## Use it
 
@@ -180,13 +182,20 @@ MCLK GPIO2 / BCLK GPIO17 / LRCLK GPIO45 / DOUT GPIO15 / DIN GPIO16, amplifier en
 display SPI CLK GPIO7 / MOSI GPIO6 / CS GPIO5 / DC GPIO4 / reset GPIO48, backlight GPIO47, touch
 interrupt GPIO3, mute latch state GPIO1, boot key GPIO0.
 
-- The mute key engages a hardware latch that cuts the microphone. The package mirrors its state
-  into the Mute switch; the software switch alone cannot release the latch.
+- The mute key engages a hardware latch that cuts the microphone and takes the ES7210 down with
+  it. The package mirrors the latch state into the Mute switch and re-runs the ES7210 setup when
+  the latch releases; without that the wake word engine runs but hears nothing. The software
+  switch alone cannot release the latch.
 - A short press of the boot key acts like a tap on the screen (dismiss a timer, close a follow-up
   window, wake the screen). Holding it for 10 s factory resets the device.
 - The speaker runs at 16 kHz on the duplex bus (upstream uses 48 kHz); the media player resamples.
-- Not yet verified on a BOX-3: touch orientation, the landscape layout, the audio path. The first
-  run should walk through `docs/testing.md`.
+- Verified on a BOX-3 (2026-10-13/14): boot, Wi-Fi, API, OTA, display, touch, wake word, full
+  conversations with TTS, follow-up listening, the mute key, timers including several at once.
+  Still open: the boot key.
+- Seen twice on 2026-10-14 and not explained: a local intent answer ("Timer für 10 Sekunden
+  gestartet") arrived from HA's TTS proxy as an 8 s stream that was inaudible, while the same
+  kind of answer played normally in 3 s minutes later. The device decoded and played both; HA
+  logged nothing at debug level. If it recurs, note the time and compare both logs.
 
 ## License
 

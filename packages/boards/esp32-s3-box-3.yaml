@@ -19,8 +19,9 @@
 #
 # Pinout source: the upstream ESPHome configuration and Espressif's board support package
 # (bsp/esp-box-3/include/bsp/esp-box-3.h in github.com/espressif/esp-bsp).
-# Status: compiles on ESPHome 2026.9.1; not yet run on a BOX-3. Touch orientation and the
-# 16 kHz speaker path in particular need a check on hardware.
+# Status: boot, Wi-Fi, API, display, wake word, conversations with TTS and follow-up listening
+# verified on a BOX-3 on 2026-10-13/14 (ESPHome 2026.9.1), as are touch, OTA, the mute key and
+# timers. The boot key still needs a check.
 
 substitutions:
   hud_title: "S3 // BOX-3"
@@ -216,6 +217,12 @@ binary_sensor:
     on_press:
       - switch.turn_on: mute
     on_release:
+      # The latch also takes the ES7210 down: after the release it answers again but with
+      # default registers and delivers silence, so the wake word engine runs and hears nothing
+      # (seen 2026-10-13). Give the supply a moment, then re-run the driver's setup, which is
+      # a software reset plus the full register set.
+      - delay: 100ms
+      - lambda: id(es7210_adc).setup();
       - switch.turn_off: mute
   # Boot key: a short press acts like a tap on the screen (dismiss a ringing timer, close a
   # follow-up window, wake the screen); holding it for 10 s factory resets the device.

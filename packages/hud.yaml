@@ -10,6 +10,7 @@
 #   link_dot, link_label                        top bar
 #   frame_tl, frame_tr, frame_bl, frame_br      corner brackets around the core
 #   ring_thin, follow_arc, follow_digits        outer ring, follow-up countdown
+#   timer_arc2                                  outer ring, the next timer (nested arc)
 #   ring_main, timer_arc, timer_digits, timer_tag   main ring, timer countdown
 #   spin_a, spin_b, phase_disc                  spinners and the centre disc
 #   phase_label, phase_sub                      state text
@@ -178,7 +179,7 @@ script:
             lv_obj_set_style_arc_color(id(timer_arc), tc, LV_PART_INDICATOR);
             lv_obj_set_style_text_color(id(timer_digits), tc, 0);
             lv_obj_set_style_text_color(id(timer_tag), tc, 0);
-            if (timer_done) { lv_arc_set_value(id(timer_arc), 1000); lv_label_set_text(id(timer_digits), "00:00"); }
+            if (timer_done) { lv_arc_set_value(id(timer_arc), 1000); lv_label_set_text(id(timer_digits), "00:00"); lv_label_set_text(id(timer_tag), "TIMER"); }
             lv_obj_clear_flag(id(timer_arc), LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(id(timer_digits), LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(id(timer_tag), LV_OBJ_FLAG_HIDDEN);
@@ -191,10 +192,11 @@ script:
             lv_obj_clear_flag(id(ring_main), LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(id(phase_disc), LV_OBJ_FLAG_HIDDEN);
           }
-          // follow-up window: the outer ring drains, the seconds sit in the hollow disc
+          // outer ring: a follow-up countdown wins, then the next timer's arc, else the plain ring
           if (id(voice_assistant_phase) == ${va_phase_follow_up}) {
             lv_obj_clear_flag(id(follow_arc), LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(timer_arc2), LV_OBJ_FLAG_HIDDEN);
             if (timer_core) lv_obj_add_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
             else lv_obj_clear_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
           } else {
@@ -202,7 +204,13 @@ script:
             lv_anim_del(id(follow_digits), nullptr);
             lv_obj_add_flag(id(follow_arc), LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(id(follow_digits), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+            if (id(timer_second)) {
+              lv_obj_clear_flag(id(timer_arc2), LV_OBJ_FLAG_HIDDEN);
+              lv_obj_add_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(id(timer_arc2), LV_OBJ_FLAG_HIDDEN);
+              lv_obj_clear_flag(id(ring_thin), LV_OBJ_FLAG_HIDDEN);
+            }
           }
           lv_obj_set_style_border_color(id(ring_main), c, 0);
           lv_obj_set_style_border_color(id(phase_disc), c, 0);
@@ -230,25 +238,52 @@ script:
           const bool de = id(ui_language).current_option() == "Deutsch";
           lv_label_set_text(id(you_tag), de ? "> DU" : "> YOU");
       - script.execute: draw_mute
-      - script.execute: draw_display
+      # draw_timer refreshes the timer tag's language and ends with draw_display.
+      - script.execute: draw_timer
   - id: draw_timer
     mode: restart
     then:
       - lambda: |-
-          // The first active timer (the one that ends soonest) takes over the ring.
-          const voice_assistant::Timer *t = nullptr;
+          // The active timer that ends soonest takes over the main ring, the next one drains
+          // the thin outer ring, and the tag counts whatever is left beyond those two.
+          const voice_assistant::Timer *t = nullptr, *t2 = nullptr;
+          int active = 0;
           for (const auto &x : id(va).get_timers()) {
-            if (x.is_active && (t == nullptr || x.seconds_left < t->seconds_left)) t = &x;
+            if (!x.is_active) continue;
+            active++;
+            if (t == nullptr || x.seconds_left < t->seconds_left) { t2 = t; t = &x; }
+            else if (t2 == nullptr || x.seconds_left < t2->seconds_left) t2 = &x;
           }
           id(timer_active) = (t != nullptr);
+          id(timer_second) = (t2 != nullptr);
+          if (t2 != nullptr) {
+            uint32_t total2 = t2->total_seconds > 0 ? t2->total_seconds : 1;
+            lv_arc_set_value(id(timer_arc2), (int32_t) (1000 * t2->seconds_left / total2));
+          }
           if (t != nullptr) {
+            const bool de = id(ui_language).current_option() == "Deutsch";
             uint32_t h = t->seconds_left / 3600, m = (t->seconds_left % 3600) / 60, sec = t->seconds_left % 60;
-            if (h > 0) lv_label_set_text_fmt(id(timer_digits), "%u:%02u:%02u", (unsigned) h, (unsigned) m, (unsigned) sec);
+            // Five characters fit in the ring, eight do not: above an hour show H:MM and let the
+            // tag name the unit.
+            const char *unit = h > 0 ? (de ? "STD:MIN" : "HRS:MIN") : "TIMER";
+            if (h > 0) lv_label_set_text_fmt(id(timer_digits), "%u:%02u", (unsigned) h, (unsigned) m);
             else lv_label_set_text_fmt(id(timer_digits), "%02u:%02u", (unsigned) m, (unsigned) sec);
+            if (active > 2) lv_label_set_text_fmt(id(timer_tag), "%s +%d", unit, active - 2);
+            else lv_label_set_text(id(timer_tag), unit);
             uint32_t total = t->total_seconds > 0 ? t->total_seconds : 1;
             lv_arc_set_value(id(timer_arc), (int32_t) (1000 * t->seconds_left / total));
           }
       - script.execute: draw_display
+  # Bar and slider follow the media player (volume set from Home Assistant, restored at boot).
+  - id: sync_volume
+    mode: restart
+    then:
+      - lambda: |-
+          const int level = (int) lroundf(id(speaker_media_player).volume * 100.0f);
+          lv_slider_set_value(id(volume_slider), level, LV_ANIM_OFF);
+          id(draw_volume).execute(level);
+  # 16 segments; the top five (from 69 % up) are magenta. The number is the media player's
+  # volume in percent, which the speaker maps onto its volume_min..volume_max range.
   - id: draw_volume
     mode: restart
     parameters:
@@ -281,6 +316,10 @@ globals:
     type: uint32_t
     initial_value: "0xFFFFFFFF"
   - id: timer_active
+    type: bool
+    initial_value: "false"
+  # A second active timer is drawn as a thin arc on the outer ring.
+  - id: timer_second
     type: bool
     initial_value: "false"
 
