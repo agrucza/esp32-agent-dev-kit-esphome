@@ -94,11 +94,11 @@ Tooling: watch the log with `docker run --rm -it -v "$PWD":/config ghcr.io/espho
 | I2 | Set it back to English | STANDBY, "> YOU", MUTE |
 | I3 | Wake word, then stay silent | After a few seconds: red FAULT (FEHLER), a low double buzz, then back to standby |
 
-## J. Follow-up listening ("Continue conversation" switch on, "Follow-up timeout" at 8 s)
+## J. Follow-up listening ("Continue conversation" switch on, "Follow-up timeout" at its default of 5 s)
 
 | # | Step | Expected |
 |---|---|---|
-| J1 | Wake word + question, then stay silent | After the answer: ring stays cyan, "LISTENING" / "NO WAKE WORD NEEDED", the thin outer ring drains and "8" counts down in the disc. At 0 the screen goes back to standby, no error tone, no red disc. Wake word works afterwards |
+| J1 | Wake word + question, then stay silent | After the answer: ring stays cyan, "LISTENING" / "NO WAKE WORD NEEDED", the thin outer ring drains and "5" counts down in the disc. At 0 the screen goes back to standby, no error tone, no red disc. Wake word works afterwards |
 | J2 | Wake word + question, then ask a second question during the countdown without a wake word | Countdown disappears as soon as you speak, the second question is answered, a new window opens after that answer |
 | J3 | Chain three questions this way, then stay silent | All three answered, then standby after the countdown |
 | J4 | During the countdown tap the screen | Window closes at once, standby, wake word works |

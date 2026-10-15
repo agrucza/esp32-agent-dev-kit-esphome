@@ -330,7 +330,9 @@ voice_assistant:
 
 number:
   # How long the follow-up window waits for the first word. Home Assistant gives up on its own
-  # after 15 s of silence, so the slider cannot go beyond that.
+  # after 15 s of silence, so the slider cannot go beyond that. 5 s is enough for a reply and
+  # short enough that a device in the next room has closed its window before you talk to
+  # another one (an open window picks up speech meant for the other device, 2026-10-15).
   - platform: template
     id: follow_up_timeout
     name: Follow-up timeout
@@ -341,7 +343,7 @@ number:
     min_value: 1
     max_value: 15
     step: 1
-    initial_value: 8
+    initial_value: 5
     unit_of_measurement: s
     mode: slider
 
